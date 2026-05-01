@@ -1,0 +1,42 @@
+# Rust
+/target
+**/target
+Cargo.lock.bak
+*.rs.bk
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node (UI)
+node_modules/
+dist/
+.svelte-kit/
+
+# eBPF build artifacts
+*.bpf.o
+
+# Local config / secrets
+.env
+.env.local
+*.pem
+*.key
+~/.agentguard/
+
+# Test artifacts
+tests/fixtures/sandbox/
+!tests/fixtures/sandbox/.gitkeep
+tmp/
+*.jsonl
+
+# Coverage
+*.profraw
+*.profdata
+/coverage/

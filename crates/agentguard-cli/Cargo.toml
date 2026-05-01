@@ -1,0 +1,27 @@
+[package]
+name = "agentguard-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license = "BUSL-1.1"
+description = "AgentGuard command-line interface"
+repository.workspace = true
+
+[[bin]]
+name = "agentguard"
+path = "src/main.rs"
+
+[dependencies]
+agentguard-common = { path = "../agentguard-common" }
+
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "net"] }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+interprocess = { workspace = true }
+dirs = { workspace = true }

@@ -1,0 +1,12 @@
+Applies to: crates/agentguard-ebpf/ (kernel-side eBPF programs).
+
+This component is licensed under the GNU General Public License, version 2
+(GPL-2.0-only). The full text of GPL v2 is available at:
+https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+
+SPDX-License-Identifier: GPL-2.0-only
+
+Rationale: programs loaded into the Linux kernel via eBPF LSM hooks must be
+GPL-compatible to use GPL-only helpers such as bpf_d_path. Declaring
+GPL-2.0-only keeps us compatible with the kernel licensing requirements
+regardless of the license used by the rest of the AgentGuard codebase.

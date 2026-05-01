@@ -1,0 +1,23 @@
+[package]
+name = "agentguard-common"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license = "MIT"
+description = "Shared types between AgentGuard userspace and eBPF components"
+repository.workspace = true
+
+[lib]
+name = "agentguard_common"
+# no_std compatible — este crate se usa también desde el crate agentguard-ebpf
+# que compila para bpfel-unknown-none.
+
+[features]
+default = ["std"]
+# `std` habilita tipos que no funcionan en no_std (Strings, IpcCommand con Vec, etc.)
+std = ["serde/std", "thiserror"]
+
+[dependencies]
+serde = { workspace = true, default-features = false, features = ["derive"] }
+thiserror = { workspace = true, optional = true }

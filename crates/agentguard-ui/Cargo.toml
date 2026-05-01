@@ -1,0 +1,16 @@
+[package]
+name = "agentguard-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license = "BUSL-1.1"
+description = "AgentGuard Tauri UI (stub — implementation scheduled for Phase 4)"
+repository.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Stub de Fase 0: sin dependencias pesadas. Las de Tauri se añaden en Fase 4.1.

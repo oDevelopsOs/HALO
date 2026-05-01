@@ -1,0 +1,31 @@
+Business Source License 1.1
+
+Licensor: AgentGuard Contributors
+Licensed Work: AgentGuard (crates agentguard-daemon, agentguard-cli, agentguard-ui)
+Change Date: Four years from the date the Licensed Work is published.
+Change License: MIT
+
+Terms:
+The Licensor hereby grants you the right to copy, modify, create derivative
+works, redistribute, and make non-production use of the Licensed Work. The
+Licensor may make additional use grants.
+
+Any use of the Licensed Work beyond the scope of the additional use grants,
+if any, must have a commercial license from the Licensor. For the purposes of
+this License, "non-production use" means any use that does not make the
+Licensed Work available to third parties as part of a commercial product or
+service.
+
+Effective on the Change Date, the Licensor grants you rights under the terms
+of the Change License, and the rights granted under this License terminate.
+
+If your use of the Licensed Work does not comply with the requirements
+currently in effect as described in this License, you must purchase a
+commercial license from the Licensor, cease using the Licensed Work, or the
+License automatically terminates.
+
+The full text of the Business Source License 1.1 is available at:
+https://mariadb.com/bsl11/
+
+THE LICENSED WORK IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED.
