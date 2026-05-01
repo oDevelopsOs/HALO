@@ -10,6 +10,10 @@
 
 use std::path::PathBuf;
 
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+use agentguard_daemon::dlp::patterns::compile_all;
+use agentguard_daemon::dlp::DlpProxy;
 use agentguard_daemon::{select_guard, Config, SecurityEvent, Vault, ViolationKind};
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -131,16 +135,52 @@ async fn main() -> Result<()> {
         "protection backend ready"
     );
 
-    // Canal de eventos guard → loop principal.
+    // Canal de eventos compartido entre guard + DLP proxy → loop principal.
     let (event_tx, mut event_rx) = mpsc::channel::<SecurityEvent>(256);
+
+    let guard_event_tx = event_tx.clone();
     let guard_task = tokio::spawn(async move {
-        if let Err(e) = guard.run(event_tx).await {
+        if let Err(e) = guard.run(guard_event_tx).await {
             error!(error = %e, "protection backend crashed");
         }
     });
 
-    // TODO (Fase 2.1): dlp_proxy::start
+    // DLP proxy (si habilitado en config).
+    let dlp_handle = if config.dlp.enabled {
+        let custom: Vec<(String, String)> = config
+            .dlp
+            .custom_patterns
+            .iter()
+            .map(|p| (p.name.clone(), p.regex.clone()))
+            .collect();
+        match compile_all(&custom) {
+            Ok(patterns) => {
+                let action = config.dlp_action()?;
+                let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), config.dlp.proxy_port);
+                let proxy = DlpProxy::new(patterns, action).with_events(event_tx.clone());
+                match proxy.start(addr).await {
+                    Ok(h) => {
+                        info!(addr = %h.local_addr(), action = ?action, "DLP proxy started");
+                        Some(h)
+                    }
+                    Err(e) => {
+                        error!(error = %e, "DLP proxy failed to start — continuing without DLP");
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                error!(error = %e, "DLP pattern compilation failed");
+                None
+            }
+        }
+    } else {
+        info!("DLP disabled in config");
+        None
+    };
+
     // TODO (Fase 2.6): ipc_server::start
+    drop(event_tx); // el clon lo mantienen guard + dlp; cuando todos cierren, el rx se cierra.
 
     info!("entering main loop (ctrl-c to quit)");
     let vault_for_events = vault.clone();
@@ -161,6 +201,9 @@ async fn main() -> Result<()> {
 
     info!("AgentGuard daemon shutting down");
     guard_task.abort();
+    if let Some(h) = dlp_handle {
+        h.shutdown();
+    }
     Ok(())
 }
 

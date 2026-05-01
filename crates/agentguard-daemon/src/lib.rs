@@ -5,6 +5,7 @@
 //! `crates/agentguard-daemon/tests/`.
 
 pub mod config;
+pub mod dlp;
 pub mod events;
 pub mod guard;
 pub mod vault;

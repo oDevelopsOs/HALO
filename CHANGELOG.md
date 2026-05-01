@@ -28,6 +28,17 @@ versionado [SemVer](https://semver.org/lang/es/).
 - `agentguard-daemon::guard::ebpf` (feature `ebpf`, Linux): skeleton con chequeo real de `/sys/kernel/security/lsm`. Devuelve `Unavailable` hasta cablear aya + build.rs.
 - `main.rs`: event loop con `tokio::select!` que consume del guard, loggea la violación, y dispara snapshot reactivo si `on_violation.snapshot_on_violation`.
 
+### Added — Fase 2.1 (DLP proxy HTTP)
+- `agentguard-daemon::dlp::patterns`: catálogo de 14 patrones built-in (OpenAI, Anthropic, GitHub tokens, AWS, Google, Stripe, Slack, private keys), compilación de custom patterns del config, `first_match()` que devuelve solo el nombre (nunca el valor). 9 tests.
+- `agentguard-daemon::dlp::proxy`: proxy HTTP con hyper 1.x, límite de 2 MiB para el escaneo de body, fail-open para uploads grandes, forward transparente con hyper-util. Respeta las 3 acciones (`block` / `alert` / `log`) y emite `DlpViolation` por canal mpsc. 7 tests incluyendo E2E con raw sockets.
+- CONNECT tunneling → 501 hasta que llegue HTTPS MITM (Fase 2.3).
+- Integración en `main.rs`: proxy arranca automáticamente si `dlp.enabled = true`, compartiendo el canal de eventos con el guard.
+
+Verificado E2E: `curl -x http://127.0.0.1:7771 -d 'sk-...' http://dest/` → `HTTP 403`. Rutas DELETE dispararon snapshot reactivo simultáneamente.
+
 ### Pending
+- 2.2 + 2.3: CA root local con `rcgen` + HTTPS MITM con `tokio-rustls`.
+- 2.6: IPC server (socket Unix + interprocess + IpcCommand/IpcResponse).
+- 2.7: detección de procesos agente (match por exe/argv/env).
 - 1.5 real: aya + build.rs que compile `crates/agentguard-ebpf/` + `include_bytes_aligned!` del bytecode + hooks LSM reales. Iterar en VM con BPF LSM.
-- Fase 2: DLP proxy (hyper + rustls + rcgen MITM), IPC server (interprocess), CLI cableada.
+- Fase 3+: CLI cableada, packaging systemd, releases.
