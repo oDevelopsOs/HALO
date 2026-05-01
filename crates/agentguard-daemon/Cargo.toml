@@ -44,6 +44,10 @@ interprocess = { workspace = true }
 uuid = { workspace = true }
 clap = { workspace = true }
 
+# Userspace fallback para filesystem watching (kernels sin BPF LSM).
+notify = { version = "6", default-features = false, features = ["macos_kqueue"] }
+async-trait = "0.1"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # aya se añade en fase 1.5 cuando llegue kernel_loader.rs
 # aya = "0.13"

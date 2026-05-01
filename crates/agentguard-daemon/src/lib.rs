@@ -5,7 +5,11 @@
 //! `crates/agentguard-daemon/tests/`.
 
 pub mod config;
+pub mod events;
+pub mod guard;
 pub mod vault;
 
 pub use config::{Config, ConfigError, DlpAction};
+pub use events::{SecurityEvent, ViolationKind};
+pub use guard::{select_guard, GuardError, KernelGuard, ProtectionLevel};
 pub use vault::{Snapshot, Vault, VaultError};

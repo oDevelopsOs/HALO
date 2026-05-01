@@ -10,10 +10,11 @@
 
 use std::path::PathBuf;
 
-use agentguard_daemon::{Config, Vault};
+use agentguard_daemon::{select_guard, Config, SecurityEvent, Vault, ViolationKind};
 use anyhow::{Context, Result};
 use clap::Parser;
-use tracing::{info, warn};
+use tokio::sync::mpsc;
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
@@ -122,12 +123,100 @@ async fn main() -> Result<()> {
         }
     }
 
-    // TODO (Fase 1.6): kernel_loader::load
+    // Seleccionar guard (eBPF si está disponible, sino userspace).
+    let guard = select_guard(&config.protected_dirs).await?;
+    info!(
+        backend = guard.backend_name(),
+        level = ?guard.protection_level(),
+        "protection backend ready"
+    );
+
+    // Canal de eventos guard → loop principal.
+    let (event_tx, mut event_rx) = mpsc::channel::<SecurityEvent>(256);
+    let guard_task = tokio::spawn(async move {
+        if let Err(e) = guard.run(event_tx).await {
+            error!(error = %e, "protection backend crashed");
+        }
+    });
+
     // TODO (Fase 2.1): dlp_proxy::start
     // TODO (Fase 2.6): ipc_server::start
 
     info!("entering main loop (ctrl-c to quit)");
-    tokio::signal::ctrl_c().await?;
+    let vault_for_events = vault.clone();
+    let snapshot_on_violation = config.on_violation.snapshot_on_violation;
+    let violation_paths = config.protected_dirs.clone();
+    loop {
+        tokio::select! {
+            Some(event) = event_rx.recv() => {
+                handle_event(&vault_for_events, snapshot_on_violation, &violation_paths, event).await;
+            }
+            _ = tokio::signal::ctrl_c() => {
+                info!("ctrl-c received");
+                break;
+            }
+            else => break,
+        }
+    }
+
     info!("AgentGuard daemon shutting down");
+    guard_task.abort();
     Ok(())
+}
+
+async fn handle_event(
+    vault: &Vault,
+    snapshot_on_violation: bool,
+    protected_paths: &[PathBuf],
+    event: SecurityEvent,
+) {
+    match &event {
+        SecurityEvent::FileViolation {
+            path,
+            process,
+            pid,
+            violation,
+            ..
+        } => {
+            let action = match violation {
+                ViolationKind::DeleteAttempt => "DELETE",
+                ViolationKind::WriteAttempt => "WRITE",
+                ViolationKind::RenameAttempt => "RENAME",
+                ViolationKind::CreateAttempt => "CREATE",
+            };
+            warn!(
+                action,
+                path = ?path,
+                process = %process,
+                pid,
+                "filesystem violation detected"
+            );
+
+            if snapshot_on_violation && !protected_paths.is_empty() {
+                match vault
+                    .create_snapshot(protected_paths, "on-violation")
+                    .await
+                {
+                    Ok(s) => info!(id = %s.id, "reactive snapshot created"),
+                    Err(e) => error!(error = %e, "reactive snapshot failed"),
+                }
+            }
+        }
+        SecurityEvent::DlpViolation {
+            pattern_name,
+            destination,
+            process,
+            ..
+        } => {
+            warn!(
+                pattern = %pattern_name,
+                destination = %destination,
+                process = %process,
+                "DLP violation detected"
+            );
+        }
+        SecurityEvent::SystemError { message, .. } => {
+            error!(message = %message, "system error from guard");
+        }
+    }
 }

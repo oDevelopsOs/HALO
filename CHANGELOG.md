@@ -21,8 +21,13 @@ versionado [SemVer](https://semver.org/lang/es/).
 - `agentguard-daemon::vault`: snapshot/restore/list/cleanup con deduplicación BLAKE3 y manifest JSON. Preserva permisos Unix. Tests unitarios: 7, integración: 3.
 - `agentguard-daemon` bin: scaffold que carga config, crea vault, ejecuta startup snapshot y espera `SIGINT`.
 
+### Added — Fase 1 (1.5 skeleton + 1.8 fallback)
+- `agentguard-daemon::events`: `SecurityEvent` (FileViolation / DlpViolation / SystemError) + `ViolationKind`, con schema estable de JSON para `incidents.jsonl`. 2 tests (incluye guardarrail "el JSON NO contiene el valor del secreto").
+- `agentguard-daemon::guard`: trait `KernelGuard` + `ProtectionLevel` (KernelDenial vs UserspaceObservation) + `select_guard()` que elige el mejor backend disponible.
+- `agentguard-daemon::guard::userspace`: backend con `notify` que observa rutas y emite `SecurityEvent` por cada delete/rename/write/create. Funciona en cualquier kernel. 3 tests.
+- `agentguard-daemon::guard::ebpf` (feature `ebpf`, Linux): skeleton con chequeo real de `/sys/kernel/security/lsm`. Devuelve `Unavailable` hasta cablear aya + build.rs.
+- `main.rs`: event loop con `tokio::select!` que consume del guard, loggea la violación, y dispara snapshot reactivo si `on_violation.snapshot_on_violation`.
+
 ### Pending
-- 1.5 `agentguard-ebpf/file_guard.rs` real (aya + build.rs + kernel_loader en daemon).
-- 1.6 `kernel_loader.rs` con population de mapa BPF y ring buffer reader.
-- 1.8 Fallback userspace con `notify`.
-- Fase 2+: DLP proxy, IPC, CLI cableada.
+- 1.5 real: aya + build.rs que compile `crates/agentguard-ebpf/` + `include_bytes_aligned!` del bytecode + hooks LSM reales. Iterar en VM con BPF LSM.
+- Fase 2: DLP proxy (hyper + rustls + rcgen MITM), IPC server (interprocess), CLI cableada.
