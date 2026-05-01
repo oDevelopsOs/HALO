@@ -14,7 +14,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use agentguard_daemon::dlp::patterns::compile_all;
 use agentguard_daemon::dlp::DlpProxy;
-use agentguard_daemon::{select_guard, Config, SecurityEvent, Vault, ViolationKind};
+use agentguard_daemon::{select_guard, Config, LocalCa, SecurityEvent, Vault, ViolationKind};
 use anyhow::{Context, Result};
 use clap::Parser;
 use tokio::sync::mpsc;
@@ -74,6 +74,19 @@ fn default_vault_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("vault"))
 }
 
+fn default_ca_dir() -> PathBuf {
+    #[cfg(unix)]
+    {
+        use nix::unistd::Uid;
+        if Uid::effective().is_root() {
+            return PathBuf::from("/var/lib/agentguard/ca");
+        }
+    }
+    dirs::home_dir()
+        .map(|h| h.join(".agentguard").join("ca"))
+        .unwrap_or_else(|| PathBuf::from("ca"))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     init_tracing();
@@ -126,6 +139,15 @@ async fn main() -> Result<()> {
             Err(e) => warn!(error = %e, "startup snapshot failed"),
         }
     }
+
+    // CA root local (Fase 2.2): cargar o generar. Se usará en Fase 2.3
+    // cuando el proxy DLP soporte HTTPS MITM. Por ahora solo la preparamos.
+    let ca_dir = default_ca_dir();
+    let ca = LocalCa::load_or_generate(&ca_dir).with_context(|| format!("CA at {ca_dir:?}"))?;
+    info!(
+        cert_path = ?ca.cert_path(),
+        "CA root ready — add cert to system trust store to enable HTTPS DLP inspection"
+    );
 
     // Seleccionar guard (eBPF si está disponible, sino userspace).
     let guard = select_guard(&config.protected_dirs).await?;

@@ -36,8 +36,16 @@ versionado [SemVer](https://semver.org/lang/es/).
 
 Verificado E2E: `curl -x http://127.0.0.1:7771 -d 'sk-...' http://dest/` → `HTTP 403`. Rutas DELETE dispararon snapshot reactivo simultáneamente.
 
+### Added — Fase 2.2 (CA root local)
+- `agentguard-daemon::ca`: `LocalCa` con ECDSA self-signed root (validez 10 años, CN `"AgentGuard DLP Local Root CA"`) generado con `rcgen`.
+- `load_or_generate()` idempotente: genera la primera vez, recarga en siguientes arranques.
+- Persistencia en `~/.agentguard/ca/` (modo usuario) o `/var/lib/agentguard/ca/` (modo servicio). Permisos `0o700` dir, `0o644` cert, `0o600` key.
+- `Debug` impl redactado (la clave privada no aparece en logs accidentalmente).
+- Detección de directorio corrupto (cert sin key o viceversa).
+- Daemon genera la CA en primer boot y muestra la ruta del cert para que el usuario la añada al trust store.
+
 ### Pending
-- 2.2 + 2.3: CA root local con `rcgen` + HTTPS MITM con `tokio-rustls`.
+- 2.3: HTTPS MITM con `tokio-rustls` — emitir certs leaf on-the-fly firmados por la CA local y escanear body descifrado.
 - 2.6: IPC server (socket Unix + interprocess + IpcCommand/IpcResponse).
 - 2.7: detección de procesos agente (match por exe/argv/env).
 - 1.5 real: aya + build.rs que compile `crates/agentguard-ebpf/` + `include_bytes_aligned!` del bytecode + hooks LSM reales. Iterar en VM con BPF LSM.

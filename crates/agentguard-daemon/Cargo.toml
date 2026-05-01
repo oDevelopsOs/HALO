@@ -55,6 +55,10 @@ http-body-util = "0.1"
 bytes = "1"
 once_cell = "1"
 
+# CA root + leaf cert generation para HTTPS MITM (Fase 2.2 + 2.3).
+rcgen = { version = "0.13", default-features = false, features = ["pem", "crypto", "aws_lc_rs"] }
+time = "0.3"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # aya se añade en fase 1.5 cuando llegue kernel_loader.rs
 # aya = "0.13"
