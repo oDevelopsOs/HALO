@@ -13,6 +13,7 @@ dependencies = [
  "interprocess",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "tracing",
@@ -28,14 +29,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "agentguard-daemon"
+name = "agentguard-core"
 version = "0.1.0"
 dependencies = [
  "agentguard-common",
  "anyhow",
  "async-trait",
- "aya",
- "aya-log",
  "blake3",
  "bytes",
  "clap",
@@ -45,7 +44,6 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "interprocess",
- "libc",
  "nix",
  "notify",
  "once_cell",
@@ -66,6 +64,38 @@ dependencies = [
  "uuid",
  "webpki-roots 0.26.11",
  "windows",
+]
+
+[[package]]
+name = "agentguard-installer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+]
+
+[[package]]
+name = "agentguard-linux"
+version = "0.1.0"
+dependencies = [
+ "agentguard-common",
+ "agentguard-core",
+ "anyhow",
+ "async-trait",
+ "aya",
+ "aya-log",
+ "clap",
+ "dirs",
+ "libc",
+ "nix",
+ "notify",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

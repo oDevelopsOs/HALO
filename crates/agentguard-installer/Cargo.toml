@@ -1,0 +1,16 @@
+[package]
+name = "agentguard-installer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license = "BUSL-1.1"
+description = "AgentGuard bootstrap installer — detects OS and downloads the right platform binary (Fase 3)"
+repository.workspace = true
+
+[[bin]]
+name = "agentguard-installer"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }

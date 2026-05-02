@@ -1,0 +1,48 @@
+[Unit]
+Description=AgentGuard — AI Agent Security Daemon (kernel-level protection)
+Documentation=https://agentguard.io/docs
+After=network.target
+StartLimitIntervalSec=0
+StartLimitBurst=3
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/agentguard-linux
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=1
+
+# Seguridad del proceso
+User=root
+AmbientCapabilities=CAP_BPF CAP_SYS_ADMIN CAP_NET_ADMIN CAP_PERFMON
+CapabilityBoundingSet=CAP_BPF CAP_SYS_ADMIN CAP_NET_ADMIN CAP_PERFMON
+NoNewPrivileges=true
+
+# El daemon necesita eBPF → root.
+# Para vault/logs: /var/lib/agentguard (system-wide)
+StateDirectory=agentguard
+LogsDirectory=agentguard
+RuntimeDirectory=agentguard
+
+# Aislamiento del sistema
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/agentguard /var/log/agentguard /run/agentguard
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+RestrictRealtime=true
+RestrictSUIDSGID=true
+
+Environment=RUST_LOG=info
+Environment=PROTECTION_MODE=auto
+
+[Install]
+WantedBy=multi-user.target

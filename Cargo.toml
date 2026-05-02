@@ -2,8 +2,12 @@
 resolver = "2"
 members = [
     "crates/agentguard-common",
-    "crates/agentguard-daemon",
+    "crates/agentguard-core",
+    "crates/agentguard-linux",
+    # "crates/agentguard-windows",   # activar en Fase 4
+    # "crates/agentguard-macos",     # activar en Fase 5
     "crates/agentguard-cli",
+    "crates/agentguard-installer",
     "crates/agentguard-ui",
 ]
 # agentguard-ebpf se compila por separado con nightly + target bpfel-unknown-none
@@ -23,7 +27,7 @@ homepage = "https://agentguard.io"
 tokio = { version = "1", default-features = false }
 
 # Serialization
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", default-features = false, features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
 

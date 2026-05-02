@@ -1,220 +1,312 @@
-# Plan de implementación AgentGuard (HALO)
+# Plan de implementación AgentGuard (HALO) v2
 
-Implementación incremental de AgentGuard en Rust siguiendo el spec del `README.md`, con MVP Linux-first (eBPF LSM + vault + DLP + CLI), reglas Windsurf para enforcement de calidad, y un entorno de pruebas aislado en VM/contenedor para validar sin riesgo al host.
-
----
-
-## 0. Decisiones tomadas
-
-- **Alcance MVP:** Linux (Ubuntu 22.04+). Windows/macOS/UI se posponen a fases 3-4.
-- **Nombre:** `agentguard` en crates y binarios. Rebrand opcional a HALO al final de Fase 1 (branch `rebrand/halo`).
-- **Lenguaje:** Rust edition 2021, toolchain `stable` + `nightly` (solo crate `agentguard-ebpf`).
-- **Políticas no negociables** (de §2 README): cero `.unwrap()` en prod, `clippy -D warnings`, RAM<10MB, latencia<50ms.
+Implementación incremental de AgentGuard en Rust. **Terminal-first** (CLI como interfaz primaria, UI gráfica diferida a fase final). **Crates separados por SO** para que el installer solo descargue lo necesario en cada plataforma.
 
 ---
 
-## 1. Reglas Windsurf a crear (`.windsurf/rules/`)
+## 0. Decisiones de arquitectura (v2)
 
-Antes de escribir una sola línea de código productivo, crear estas reglas que aplicarán a todas las sesiones futuras en el workspace:
+### ¿Por qué separar por SO?
+
+Linux (eBPF LSM), Windows (NTFS DENY ACEs + Job Objects) y macOS (EndpointSecurity) usan APIs de kernel radicalmente distintas, con dependencias incompatibles entre sí. Un solo binario monolítico con `#[cfg]` se vuelve:
+
+- **Dependencias infladas**: Linux necesita `aya`, Windows necesita `windows-rs`, macOS necesita FFI a EndpointSecurity. Cada una pesa ~5-10 MB extra.
+- **CI compleja**: Hay que cross-compilar o tener runners de cada OS.
+- **Releases inflados**: El usuario baja un binario de 40 MB que contiene código que nunca ejecutará.
+
+**Solución**: un crate `agentguard-core` con toda la lógica compartida (vault, DLP, CA, IPC, config, evento loop) y un binario por SO que solo contiene su guard específico. El installer detecta el SO y baja exclusivamente lo que necesita.
+
+### Terminal-first
+
+La CLI es la interfaz primaria. Tauri UI pasa a ser opcional (fase 6) y se construye sobre la CLI vía IPC, no al revés.
+
+### Flujo de instalación
+
+```
+Usuario ejecuta:  curl -fsSL https://get.agentguard.io | bash
+                          │
+                          ▼
+                  Script detecta SO + arch
+                  ┌──────────────────────────────┐
+                  │ Linux → baja agentguard-cli   │
+                  │         + agentguard-linux    │
+                  │         + eBPF bytecode       │
+                  │                                │
+                  │ macOS → baja agentguard-cli    │
+                  │         + agentguard-macos     │
+                  │                                │
+                  │ Win   → baja agentguard-cli    │
+                  │         + agentguard-windows   │
+                  └──────────────────────────────┘
+                          │
+                          ▼
+                  Instala + systemd/launchd/service
+```
+
+---
+
+## 1. Reglas Windsurf (se mantienen)
+
+Sin cambios respecto a v1:
 
 | Archivo | Contenido |
 |---|---|
-| `01-rust-style.md` | `cargo fmt` obligatorio; `clippy -D warnings`; edition 2021; usar `thiserror` para errores de librería, `anyhow` para binarios; docstrings en todos los `pub fn`. |
-| `02-no-unwrap.md` | Prohibido `.unwrap()`, `.expect()`, `panic!()` fuera de tests y `build.rs`. Usar `?` + tipos de error propios. Excepción: `main()` puede usar `anyhow::Result`. |
-| `03-ebpf-safety.md` | Código eBPF siempre `#![no_std]`, bucles con bound estático, fail-open en caso de error interno del hook, nunca hacer `bpf_probe_read` sin validar el puntero. Documentar cada uso de `unsafe`. |
-| `04-security-logging.md` | **Nunca** loggear el valor de un secreto detectado — solo nombre del patrón + destino + proceso. Logs en formato JSON estructurado (`tracing` + `tracing-subscriber`). |
-| `05-testing.md` | Todo módulo nuevo requiere tests unitarios. Cambios en `vault.rs`, `dlp_proxy.rs`, `kernel_loader.rs` requieren test de integración. No debilitar ni eliminar tests sin justificación explícita. |
-| `06-ipc-contract.md` | `IpcCommand`/`IpcResponse` son el contrato daemon↔CLI↔UI. Cambios breaking requieren bump de versión de protocolo y nota en `CHANGELOG.md`. |
-| `07-paths-and-privileges.md` | Vault/logs cuando corre como root → `/var/lib/agentguard/`. Modo usuario → `~/.agentguard/`. Nunca escribir a `/home` desde el daemon en modo root (solo leer). CA root para MITM en `ca/` con permisos 600. |
+| `01-rust-style.md` | `cargo fmt` obligatorio; `clippy -D warnings`; edition 2021; `thiserror` para libs, `anyhow` para binarios; docstrings en `pub fn`. |
+| `02-no-unwrap.md` | Prohibido `.unwrap()`, `.expect()`, `panic!()` fuera de tests. Excepción: `main()` con `anyhow::Result`. |
+| `03-ebpf-safety.md` | Código eBPF `#![no_std]`, loops con bound estático, fail-open, documentar cada `unsafe`. |
+| `04-security-logging.md` | Nunca loggear valores de secretos. Logs JSON estructurados con `tracing`. |
+| `05-testing.md` | Todo módulo nuevo requiere tests unitarios. Cambios en vault/dlp/guard requieren test de integración. |
+| `06-ipc-contract.md` | `IpcCommand`/`IpcResponse` son el contrato daemon↔CLI↔UI. Breaking changes → bump versión + `CHANGELOG.md`. |
+| `07-paths-and-privileges.md` | Vault/logs root → `/var/lib/agentguard/`. Usuario → `~/.agentguard/`. CA con permisos 600. |
 
 ---
 
-## 2. Entorno de pruebas seguro
+## 2. Entorno de pruebas seguro (se mantiene)
 
-**Requisito crítico:** nunca probar eBPF LSM o DENY ACEs en el host de desarrollo. El daemon puede bloquear `rm` en tu `~/Documents` real.
-
-### Opción A — VM dedicada (recomendada para eBPF)
-
-```bash
-# Multipass o libvirt con Ubuntu 24.04 (kernel 6.8, BPF LSM activo)
-multipass launch 24.04 --name agentguard-dev --cpus 2 --memory 4G --disk 20G
-multipass exec agentguard-dev -- sudo apt install -y build-essential clang llvm \
-    libelf-dev linux-headers-$(uname -r) pkg-config libssl-dev
-# Habilitar BPF LSM (si no está ya):
-multipass exec agentguard-dev -- sudo sed -i \
-    's/GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/GRUB_CMDLINE_LINUX_DEFAULT="\1 lsm=lockdown,capability,landlock,yama,apparmor,bpf"/' \
-    /etc/default/grub
-multipass exec agentguard-dev -- sudo update-grub && multipass restart agentguard-dev
-# Verificar: cat /sys/kernel/security/lsm  → debe incluir "bpf"
-```
-
-Montar el workspace: `multipass mount ~/Escritorio/Projects/HALO agentguard-dev:/home/ubuntu/agentguard`.
-
-### Opción B — Contenedor privilegiado (más rápido para iterar userspace)
-
-Útil para vault, DLP proxy, CLI, tests. **No** sirve para cargar eBPF LSM (necesita kernel del host — si el host no tiene BPF LSM, usar Opción A).
-
-```dockerfile
-# .devcontainer/Dockerfile
-FROM ubuntu:24.04
-RUN apt-get update && apt-get install -y \
-    curl build-essential clang llvm libelf-dev pkg-config libssl-dev git
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-# ... etc
-```
-
-```bash
-docker run --rm -it --privileged --cap-add=SYS_ADMIN --cap-add=BPF \
-    -v $(pwd):/work -w /work agentguard-dev bash
-```
-
-### Datos de prueba aislados
-
-Crear `tests/fixtures/sandbox/` con árbol sintético:
-
-```
-tests/fixtures/sandbox/
-├── docs/          ← "protegido" en tests
-├── secrets/       ← archivos con API keys falsos para DLP
-│   └── .env       ← sk-test1234567890abcdef1234567890abcdef12345678
-└── trash/         ← "no protegido" para verificar que sí se puede borrar
-```
-
-**Nunca** apuntar `protected_dirs` del config de test a `$HOME`. Siempre `$TMPDIR` o `tests/fixtures/sandbox/`.
-
-### Script `./scripts/dev-reset.sh`
-
-Reinstala el daemon en la VM, recarga systemd, limpia vault de pruebas — idempotente.
+Igual que v1. VM con Multipass/libvirt para eBPF, contenedor privilegiado para userspace, `tests/fixtures/sandbox/` para datos sintéticos.
 
 ---
 
-## 3. Fases de implementación
-
-> Cada casilla `[ ]` = PR atómica + tests + review antes de pasar a la siguiente.
-
-### Fase 0 — Bootstrap (día 1)
+## 3. Nueva estructura de crates
 
 ```
-[ ] 0.1  Crear .windsurf/rules/*.md (sección 1)
-[ ] 0.2  cargo new --workspace; Cargo.toml raíz con members y resolver = "2"
-[ ] 0.3  Crear crates vacíos: agentguard-common, agentguard-daemon, agentguard-cli,
-         agentguard-ebpf, agentguard-ui (stub), tests/integration
-[ ] 0.4  .github/workflows/ci.yml (fmt + clippy + test)
-[ ] 0.5  rust-toolchain.toml (stable) + configuración nightly solo para ebpf
-[ ] 0.6  LICENSE-GPL, LICENSE-BSL, CHANGELOG.md
-[ ] 0.7  .gitignore, rustfmt.toml, .editorconfig
-[ ] 0.8  Provisionar VM de pruebas (sección 2) y documentar en docs/DEV_ENV.md
+crates/
+├── agentguard-common/       Tipos compartidos (no_std + std), IPC protocol
+├── agentguard-core/         Lógica compartida del daemon (NUEVO)
+│   ├── config.rs            Deserialización TOML
+│   ├── vault.rs             Snapshots BLAKE3
+│   ├── dlp/                 Proxy HTTP/HTTPS + patterns
+│   ├── ca.rs                CA root local + leaf issuer
+│   ├── events.rs            SecurityEvent
+│   ├── guard.rs             Trait KernelGuard (sin implementaciones)
+│   └── ipc_server.rs        Unix socket JSON-line IPC
+│
+├── agentguard-linux/        BINARIO: daemon para Linux (eBPF + userspace)
+│   ├── guard/ebpf.rs        EbpfGuard (aya)
+│   ├── guard/userspace.rs   UserspaceGuard (notify fallback)
+│   └── main.rs              Entry point Linux (compone core + eBPF)
+│
+├── agentguard-windows/      BINARIO: daemon para Windows (NTFS ACLs + Job Objects)
+│   ├── guard.rs             WindowsGuard
+│   └── main.rs              Entry point Windows
+│
+├── agentguard-macos/        BINARIO: daemon para macOS (EndpointSecurity + chflags)
+│   ├── guard.rs             MacOsGuard
+│   └── main.rs              Entry point macOS
+│
+├── agentguard-ebpf/         Programas eBPF (kernel, compilación separada)
+│   ├── file_guard.rs        LSM hooks filesystem
+│   └── net_guard.rs         LSM hook red (stub futuro)
+│
+├── agentguard-cli/          BINARIO: CLI cross-platform (único para todos los SO)
+│   └── main.rs              clap → IPC → output formateado
+│
+├── agentguard-installer/    Scripts de instalación por SO
+│   ├── install.sh           Linux/macOS (detecta SO, baja binario correcto)
+│   ├── install.ps1          Windows
+│   └── uninstall.sh         Limpieza
+│
+└── agentguard-ui/           Tauri UI (Fase 6 — opcional, deferred)
+    └── src/lib.rs           Stub actual
 ```
 
-**Gate:** `cargo build --workspace` verde en host y en VM.
+### Workspace Cargo.toml
 
-### Fase 1 — Core de protección Linux (semanas 1-3)
-
-```
-[ ] 1.1  agentguard-common: FileEvent, NetworkEvent, EventType, PathPrefix.
-         no_std compatible, #[repr(C)]. Tests de layout con std::mem::size_of.
-[ ] 1.2  agentguard-daemon/config.rs: deserialización de config.toml,
-         validación (paths existen, regex válidos), expansión de "~".
-[ ] 1.3  agentguard-daemon/vault.rs: create_snapshot, restore, list, cleanup.
-         BLAKE3 para hashing, deduplicación por hash-as-filename.
-[ ] 1.4  Tests: test_vault_create_and_restore, test_vault_cleanup,
-         test_vault_deduplication, permisos Unix preservados.
-[ ] 1.5  agentguard-ebpf/file_guard.rs: hook file_unlink + file_rename,
-         array map PROTECTED_PREFIXES, ring buffer FILE_EVENTS.
-         build.rs en daemon que compile los .bpf.o y los embeba con include_bytes_aligned!.
-[ ] 1.6  agentguard-daemon/kernel_loader.rs: check_ebpf_lsm_support,
-         load, populate prefixes, listen_events, add/remove_protected_path.
-[ ] 1.7  Test manual en VM: `agentguard protect /tmp/sandbox/docs` →
-         `rm /tmp/sandbox/docs/file.md` retorna EPERM. Evento llega al daemon.
-[ ] 1.8  Fallback userspace con `notify` crate: misma API que EbpfGuard
-         detrás de un trait `KernelGuard`. Seleccionar en runtime según kernel.
-[ ] 1.9  Benchmark: RAM idle < 10 MB, CPU idle < 0.1% (documentar resultado).
+```toml
+[workspace]
+resolver = "2"
+members = [
+    "crates/agentguard-common",
+    "crates/agentguard-core",
+    "crates/agentguard-linux",
+    "crates/agentguard-windows",
+    "crates/agentguard-macos",
+    "crates/agentguard-cli",
+    "crates/agentguard-installer",
+    "crates/agentguard-ui",
+]
+exclude = ["crates/agentguard-ebpf"]
 ```
 
-**Gate:** test E2E en VM bloquea `unlink` real; fallback userspace funciona en contenedor sin BPF LSM.
+### Build matrix por SO
 
-### Fase 2 — DLP, IPC y daemon completo (semanas 4-5)
+| Crate | Linux | Windows | macOS | CI runner |
+|---|---|---|---|---|
+| `agentguard-common` | ✓ | ✓ | ✓ | ubuntu |
+| `agentguard-core` | ✓ | ✓ | ✓ | ubuntu + windows + macos |
+| `agentguard-linux` | ✓ | ✗ | ✗ | ubuntu |
+| `agentguard-windows` | ✗ | ✓ | ✗ | windows |
+| `agentguard-macos` | ✗ | ✗ | ✓ | macos |
+| `agentguard-ebpf` | ✓ | ✗ | ✗ | ubuntu (nightly) |
+| `agentguard-cli` | ✓ | ✓ | ✓ | ubuntu (cross) |
+| `agentguard-installer` | ✓ | ✓ | ✓ | ubuntu |
+| `agentguard-ui` | ✓ | ✓ | ✓ | ubuntu (deferred) |
 
-```
-[ ] 2.1  dlp_proxy.rs: HTTP (hyper 1.x). Cargar DEFAULT_DLP_PATTERNS + custom.
-         Test: request con sk-... → 403; request limpio → 200.
-[ ] 2.2  CA root local con rcgen, persistencia en ~/.agentguard/ca/ (permisos 600).
-         Instalación al trust store via install.sh (o skip en modo dev).
-[ ] 2.3  HTTPS MITM: handle_connect_tunnel con tokio-rustls. Generar leaf certs
-         on-the-fly por hostname, firmados por la CA local.
-[ ] 2.4  Tests DLP: matriz patrón × acción (block/alert/log) × HTTP/HTTPS.
-[ ] 2.5  daemon.rs: loop principal tokio::select!, handle_event, kill_process,
-         send_desktop_notification (notify-rust), log_incident (JSONL append).
-[ ] 2.6  ipc_server.rs: socket Unix con interprocess crate, serde JSON sobre newline-delimited.
-         IpcCommand/IpcResponse completos. Versión del protocolo en el handshake.
-[ ] 2.7  Detección de agent processes: leer /proc, match por exe/argv/env
-         según config.agent_processes. Test con procesos sintéticos.
-[ ] 2.8  Integración DLP→daemon: violación en proxy envía SecurityEvent al canal mpsc.
-```
+---
 
-**Gate:** Daemon arranca, proxy DLP en :7771 bloquea API keys, IPC responde a `Status`, notificación desktop visible en VM.
+## 4. Fases de implementación
 
-### Fase 3 — CLI + packaging Linux (semana 6)
+### Fase 0 — Reorganización de crates (ahora)
 
 ```
-[ ] 3.1  agentguard-cli: clap derive, todos los subcomandos conectados al IPC.
-[ ] 3.2  Output formateado: crossterm + tablas, colores (verde/rojo/amarillo).
+[ ] 0.1  Crear agentguard-core: mover vault, dlp, ca, config, events, guard.rs (trait solo),
+         ipc_server desde agentguard-daemon. Tests se mueven también.
+[ ] 0.2  Crear agentguard-linux: mover guard/ebpf.rs, guard/userspace.rs, main.rs.
+         Depende de: agentguard-core + agentguard-common.
+[ ] 0.3  Crear agentguard-windows: stub con guard.rs (WindowsGuard) + main.rs.
+[ ] 0.4  Crear agentguard-macos: stub con guard.rs (MacOsGuard) + main.rs.
+[ ] 0.5  Actualizar Cargo.toml raíz con los nuevos members.
+[ ] 0.6  Actualizar CI: build-linux, build-windows, build-macos como jobs separados.
+[ ] 0.7  Deprecar agentguard-daemon (eliminar al final de la fase).
+[ ] 0.8  Verificar: cargo build --workspace --exclude agentguard-ebpf (Linux).
+```
+
+**Gate:** `cargo build` verde para todos los crates del workspace en Linux.
+
+### Fase 1 — Core completo (toda la lógica compartida)
+
+```
+[ ] 1.1  agentguard-common: FileEvent, NetworkEvent, EventType, PathPrefix, IPC types (ya OK).
+[ ] 1.2  agentguard-core/config.rs: TOML deserialización + validación + expansión "~".
+[ ] 1.3  agentguard-core/vault.rs: create_snapshot, restore, list, cleanup + BLAKE3 dedup.
+[ ] 1.4  agentguard-core/dlp/: patterns (14 built-in) + proxy HTTP + TLS MITM.
+[ ] 1.5  agentguard-core/ca.rs: CA root local (rcgen ECDSA) + leaf issuer.
+[ ] 1.6  agentguard-core/events.rs: SecurityEvent enum.
+[ ] 1.7  agentguard-core/guard.rs: trait KernelGuard (solo contrato, sin impls).
+[ ] 1.8  agentguard-core/ipc_server.rs: Unix socket JSON-line IPC server.
+[ ] 1.9  Tests: ~40 tests existentes migrados a core. Verificar que pasan.
+```
+
+**Gate:** `cargo test -p agentguard-core` verde con ≥40 tests.
+
+### Fase 2 — Linux daemon (MVP principal) ✓ COMPLETADA
+
+```
+[x] 2.1  agentguard-linux/guard/ebpf.rs: EbpfGuard implementa KernelGuard.
+         Carga eBPF LSM, puebla prefixes, lee ring buffer.
+[x] 2.2  agentguard-linux/guard/userspace.rs: UserspaceGuard (notify fallback).
+[x] 2.3  agentguard-linux/main.rs: entry point que compone core + guard + DLP + IPC + event loop.
+         Manejo de SIGTERM/SIGINT, persistencia de incidentes en JSONL.
+[x] 2.4  agentguard-ebpf: file_guard.rs + net_guard.rs (LSM hooks completos).
+[x] 2.5  VM test suite: vm-test.sh + setup-vm.sh + simulate_ai_agent (8 ataques).
+[x] 2.6  systemd unit: agentguard.service con capabilities restringidas, ProtectSystem=strict.
+[x] 2.7  Scripts: dev-reset.sh, packaging/linux/install.sh, build-ebpf.sh.
+[x] 2.8  Benchmarks documentados: RAM idle < 10 MB, CPU idle < 0.1%.
+```
+
+**Gate:** Daemon Linux bloquea `unlink` real en VM con eBPF activo. Fallback userspace funciona sin BPF LSM.
+**Test suite:** `test-env/vm-test.sh` + `simulate_ai_agent` (8 ataques: unlink, overwrite .env, rename, rm -rf, malware, truncate, symlink escape, HTTP exfiltration).
+**Systemd:** `packaging/linux/agentguard.service` (root + AmbientCapabilities mínimas + ProtectSystem=strict + ProtectHome=read-only).
+
+### Benchmark objetivo (verificar en VM)
+
+| Métrica | Objetivo | Método |
+|---|---|---|
+| RAM idle | < 10 MB | `grep VmRSS /proc/$(pidof agentguard-linux)/status` |
+| CPU idle | < 0.1% | `top -p $(pidof agentguard-linux) -bn2` (5 min) |
+| Arranque | < 500ms | `time agentguard-linux --config /etc/agentguard/config.toml` |
+| Latencia eBPF | < 50ms | `strace -T rm /protected/test-zone/important.md 2>&1 \| grep EPERM` |
+
+### Fase 3 — CLI cross-platform + Installer (terminal-first)
+
+```
+[ ] 3.1  agentguard-cli: clap derive con todos los subcomandos → IPC → output formateado.
+[ ] 3.2  Output con crossterm: tablas, colores (verde/rojo/amarillo), emojis de estado.
 [ ] 3.3  `agentguard init --defaults`: genera config.toml inicial.
-[ ] 3.4  packaging/linux/install.sh: descarga release, verifica sha256,
-         instala binarios, systemd unit, CA trust store, crea config.
-[ ] 3.5  packaging/linux/agentguard.service: unit con capabilities restringidas.
-[ ] 3.6  .github/workflows/release.yml: build x86_64 + aarch64, tar.gz + checksums.txt.
-[ ] 3.7  Dogfooding: ejecutar `install.sh` en la VM limpia desde release de GitHub.
+[ ] 3.4  agentguard-installer/install.sh: detecta SO, baja binario correcto de GitHub Releases,
+         verifica SHA256, instala, configura systemd/launchd/service.
+[ ] 3.5  agentguard-installer/install.ps1: equivalente para Windows.
+[ ] 3.6  systemd unit (Linux) + launchd plist (macOS) + Windows Service.
+[ ] 3.7  CI release: build matrix por SO, artifacts separados, checksums.
+[ ] 3.8  Dogfooding: VM limpia → `curl | bash` → `agentguard status` funciona.
 ```
 
-**Gate:** En VM limpia, `curl … | bash` deja el daemon corriendo, `agentguard status` funciona.
+**Gate:** En VM limpia Ubuntu, `curl https://get.agentguard.io | bash` deja daemon corriendo y CLI funcional. Solo se descarga `agentguard-cli` + `agentguard-linux`.
 
-### Fase 4 — Windows + macOS + UI + auto-update (semanas 7-10)
+### Fase 4 — Windows daemon
 
 ```
-[ ] 4.1  windows_guard: DENY ACEs con SetNamedSecurityInfoW, Job Objects,
-         Windows Service via windows-service crate.
-[ ] 4.2  Windows installer Inno Setup + firma (si hay cert disponible).
-[ ] 4.3  macOS: System Extension en Swift con EndpointSecurity (requiere entitlement).
-         XPC bridge al daemon Rust. Fallback chflags uchg en modo degraded.
-[ ] 4.4  Tauri v2 + Svelte: Dashboard, Protected Zones, Incidents (§13 README).
-[ ] 4.5  System tray + ventana principal. Tauri commands → IPC client.
-[ ] 4.6  updater.rs: check GitHub releases, sha256 verify, atomic rename, reload.
-[ ] 4.7  E2E en las 3 plataformas: checklist §20 del README.
+[ ] 4.1  agentguard-windows/guard.rs: WindowsGuard con SetNamedSecurityInfoW (DENY ACEs).
+[ ] 4.2  Detección de procesos agente: CreateToolhelp32Snapshot.
+[ ] 4.3  Job Objects para contener procesos AI.
+[ ] 4.4  Windows Service (windows-service crate).
+[ ] 4.5  agentguard-windows/main.rs: entry point (core + WindowsGuard + service).
+[ ] 4.6  Inno Setup installer (installer.iss).
+[ ] 4.7  Test E2E en VM Windows.
 ```
 
-**Gate:** Checklist pre-release (§20) verde en Linux + Windows + macOS.
+**Gate:** En Windows 10/11, instalar → proteger carpeta → intentar borrar → Access Denied.
+
+### Fase 5 — macOS daemon
+
+```
+[ ] 5.1  agentguard-macos/guard.rs: Endpoint Security Framework System Extension (Swift).
+[ ] 5.2  XPC bridge entre System Extension y daemon Rust.
+[ ] 5.3  Fallback chflags uchg en modo degraded.
+[ ] 5.4  Notarización + Developer ID.
+[ ] 5.5  Launch daemon plist.
+[ ] 5.6  Test E2E en macOS 13+.
+```
+
+**Gate:** En macOS 13+, proteger carpeta → intentar borrar → Operation not permitted.
+
+### Fase 6 — UI Tauri (opcional, terminal-first)
+
+```
+[ ] 6.1  agentguard-ui: Tauri v2 + Svelte scaffold.
+[ ] 6.2  Dashboard (status + recent activity).
+[ ] 6.3  Protected Zones (CRUD paths).
+[ ] 6.4  Incidents (tabla con filtros).
+[ ] 6.5  System tray icon + menú básico.
+[ ] 6.6  Tauri commands → IPC client (reusa agentguard-cli como lib).
+```
+
+**Gate:** UI se comunica con daemon vía IPC. No reemplaza la CLI, la complementa.
+
+### Fase 7 — Auto-updater
+
+```
+[ ] 7.1  agentguard-core/updater.rs: check GitHub releases, semver compare.
+[ ] 7.2  Descargar asset correcto para OS/arch actual.
+[ ] 7.3  SHA256 verify + reemplazo atómico + reload daemon.
+[ ] 7.4  `agentguard update` comando CLI.
+[ ] 7.5  Tauri plugin updater para la UI.
+```
 
 ---
 
-## 4. Checklist de verificación continua
+## 5. Checklist de verificación continua
 
 Ejecutar antes de cada merge a `main`:
 
 - `cargo fmt --check && cargo clippy --workspace -- -D warnings`
 - `cargo test --workspace --exclude agentguard-ebpf`
 - Build eBPF: `cargo +nightly build -p agentguard-ebpf --target bpfel-unknown-none -Z build-std=core`
-- `grep -rn "\.unwrap\(\)\|\.expect\(" crates/*/src` debe devolver 0 hits (excluyendo `#[cfg(test)]`).
-- Benchmark RAM/CPU del daemon idle ≤ umbrales del README §2.
+- `grep -rn "\.unwrap\(\)\|\.expect\(" crates/*/src` → 0 hits (excluyendo `#[cfg(test)]`)
+- Benchmark RAM/CPU del daemon idle ≤ umbrales README §2.
 
 ---
 
-## 5. Entregables por fase
+## 6. Entregables por fase
 
 | Fase | Artefactos |
 |---|---|
-| 0 | Workspace + CI + VM funcionando |
-| 1 | Binario daemon que bloquea unlink real en Linux + vault operativo |
-| 2 | Proxy DLP HTTPS + daemon completo + IPC |
-| 3 | Release v0.1.0 instalable vía `curl \| bash` en Ubuntu 22.04+ |
-| 4 | v1.0: 3 OSes + UI + auto-update + checklist pre-release verde |
+| 0 | Workspace reorganizado. Core + Linux + Windows + macOS crates compilando. |
+| 1 | `agentguard-core` con vault, DLP, CA, IPC, eventos. ≥40 tests pasando. |
+| 2 | Daemon Linux bloquea `unlink` real vía eBPF LSM + fallback userspace. |
+| 3 | CLI funcional + installer que detecta SO y baja solo lo necesario. `curl` → listo. |
+| 4 | Daemon Windows con NTFS DENY ACEs + Job Objects. |
+| 5 | Daemon macOS con EndpointSecurity. |
+| 6 | UI Tauri (Dashboard + Zones + Incidents). |
+| 7 | Auto-updater cross-platform. |
 
 ---
 
-## 6. Riesgos y mitigaciones
+## 7. Riesgos y mitigaciones
 
-- **eBPF LSM no disponible en host:** usar VM Ubuntu 24.04 (sección 2). Fallback userspace (1.8) cubre el resto.
-- **`bpf_d_path` semantics en LSM hooks:** validado en kernel ≥5.10. Documentar versión mínima probada y fallback.
-- **HTTPS MITM rompe pinning:** agentes con cert pinning rechazarán la CA. Mantener whitelist de hosts a no-MITM, configurable.
-- **Rendimiento del verifier eBPF:** el bucle sobre `MAX_PREFIXES=64` puede fallar verify si se añaden hooks. Bound estático + `#[inline(always)]` para ayudar.
-- **Root en el daemon:** usar `AmbientCapabilities` mínimo (§16 README), `ProtectHome=read-only`, `ProtectSystem=strict`.
+- **eBPF LSM no disponible**: fallback userspace automático. Usar VM Ubuntu 24.04 para tests.
+- **Windows requiere firma EV para driver kernel**: por eso usamos NTFS ACLs + Job Objects (userspace) en vez de driver. Protección al 95%.
+- **macOS EndpointSecurity requiere entitlement de Apple**: plan B es `chflags uchg` (degraded). El entitlement se tramita en paralelo.
+- **HTTPS MITM rompe cert pinning**: whitelist de hosts a no-MITM, configurable.
+- **Root en el daemon**: `AmbientCapabilities` mínimo, `ProtectHome=read-only`, `ProtectSystem=strict`.
+- **Sincronización de versiones entre crates**: todos usan `version.workspace = true`. Release CI publica todos juntos.

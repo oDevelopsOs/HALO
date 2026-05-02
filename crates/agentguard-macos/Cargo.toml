@@ -1,0 +1,25 @@
+[package]
+name = "agentguard-macos"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license = "BUSL-1.1"
+description = "AgentGuard daemon for macOS — EndpointSecurity + chflags fallback (Fase 5)"
+repository.workspace = true
+
+[[bin]]
+name = "agentguard-macos"
+path = "src/main.rs"
+
+[dependencies]
+agentguard-common = { path = "../agentguard-common" }
+agentguard-core = { path = "../agentguard-core" }
+
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "sync", "fs", "io-util", "net", "time"] }
+serde = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
+async-trait = "0.1"
+clap = { workspace = true }

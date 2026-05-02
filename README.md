@@ -125,6 +125,26 @@
 └─────────────────────────────────────────────────────────┘
 ```
 
+### Flujo de instalación (terminal-first)
+
+```
+Usuario ejecuta:  curl -fsSL https://get.agentguard.io | bash
+    │
+    ▼
+Script detecta SO + arquitectura
+    │
+    ├── Linux   → descarga agentguard-cli + agentguard-linux + eBPF bytecode
+    ├── macOS   → descarga agentguard-cli + agentguard-macos
+    └── Windows → descarga agentguard-cli + agentguard-windows
+    │
+    ▼
+Instala + configura servicio (systemd/launchd/Windows Service)
+    │
+    ▼
+Listo.  agentguard status   (CLI)
+        agentguard protect ~/Documents
+```
+
 ### Flujo de una violación (Linux)
 
 ```
@@ -152,81 +172,97 @@ eBPF LSM hook file_unlink() intercepta la syscall en kernel
 
 ## 4. Estructura del repositorio
 
+> **Arquitectura v2**: crates separados por sistema operativo. El installer detecta el SO y solo descarga el binario necesario (~5-8 MB en vez de un monolito de 40 MB).
+
 ```
 agentguard/
 │
-├── Cargo.toml                    # workspace
+├── Cargo.toml                    # workspace (8 crates + eBPF excluido)
 ├── Cargo.lock
-├── LICENSE-GPL                   # GPL v2 (módulos kernel)
-├── LICENSE-BSL                   # BSL 1.1 (daemon, UI)
+├── LICENSE-GPL                   # GPL v2 (módulos kernel eBPF)
+├── LICENSE-BSL                   # BSL 1.1 (daemon, CLI, UI)
 ├── README.md
+├── PlanDeImplementacion.md       # Plan detallado de fases
 ├── CHANGELOG.md
 ├── .github/
-│   ├── workflows/
-│   │   ├── ci.yml                # build + test + clippy
-│   │   └── release.yml           # build release binaries + update manifest
-│   └── ISSUE_TEMPLATE/
+│   └── workflows/
+│       └── ci.yml                # build matrix: Linux + Windows + macOS
 │
 ├── crates/
-│   ├── agentguard-daemon/        # Binario principal del daemon
+│   │
+│   ├── agentguard-common/        # Tipos compartidos (no_std + std), IPC protocol
+│   │   └── src/lib.rs
+│   │
+│   ├── agentguard-core/          # Lógica compartida del daemon (NUEVO v2)
+│   │   ├── Cargo.toml
+│   │   └── src/
+│   │       ├── config.rs         # Deserialización config.toml
+│   │       ├── vault.rs          # Snapshots BLAKE3
+│   │       ├── dlp/              # Proxy HTTP/HTTPS + patterns DLP
+│   │       ├── ca.rs             # CA root local + leaf cert issuer
+│   │       ├── events.rs         # SecurityEvent enum
+│   │       ├── guard.rs          # Trait KernelGuard (contrato, sin impls)
+│   │       ├── ipc_server.rs     # Socket Unix JSON-line IPC
+│   │       └── updater.rs        # Auto-update (Fase 7)
+│   │
+│   ├── agentguard-linux/         # BINARIO: daemon Linux (eBPF LSM + notify fallback)
+│   │   ├── Cargo.toml
+│   │   └── src/
+│   │       ├── main.rs           # Entry point Linux
+│   │       └── guard/
+│   │           ├── ebpf.rs       # EbpfGuard (aya)
+│   │           └── userspace.rs  # UserspaceGuard (notify fallback)
+│   │
+│   ├── agentguard-windows/       # BINARIO: daemon Windows (Fase 4)
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── main.rs
-│   │       ├── daemon.rs         # Loop principal
-│   │       ├── kernel_loader.rs  # Carga eBPF en Linux
-│   │       ├── vault.rs          # Snapshots
-│   │       ├── dlp_proxy.rs      # Proxy DLP
-│   │       ├── rules_engine.rs   # Motor de reglas
-│   │       ├── alerter.rs        # Notificaciones
-│   │       ├── ipc_server.rs     # Socket IPC
-│   │       ├── updater.rs        # Auto-update
-│   │       └── config.rs         # Deserialización config.toml
+│   │       └── guard.rs          # WindowsGuard (NTFS DENY ACEs + Job Objects)
 │   │
-│   ├── agentguard-cli/           # CLI
+│   ├── agentguard-macos/         # BINARIO: daemon macOS (Fase 5)
 │   │   ├── Cargo.toml
 │   │   └── src/
-│   │       └── main.rs
+│   │       ├── main.rs
+│   │       └── guard.rs          # MacOsGuard (EndpointSecurity + chflags fallback)
 │   │
-│   ├── agentguard-ebpf/          # Programas eBPF (compilados a BPF bytecode)
+│   ├── agentguard-ebpf/          # Programas eBPF (kernel, nightly)
 │   │   ├── Cargo.toml            # target = bpfel-unknown-none
 │   │   └── src/
-│   │       ├── file_guard.rs     # LSM hook filesystem
-│   │       └── net_guard.rs      # LSM hook red
+│   │       ├── file_guard.rs     # LSM hooks: file_unlink, file_rename, file_open
+│   │       └── net_guard.rs      # LSM hook: socket_connect (stub)
 │   │
-│   ├── agentguard-common/        # Tipos compartidos daemon↔eBPF
+│   ├── agentguard-cli/           # BINARIO: CLI cross-platform (único para todos)
 │   │   ├── Cargo.toml
 │   │   └── src/
-│   │       └── lib.rs            # structs de eventos, constantes
+│   │       └── main.rs           # clap derive → IPC → output formateado
 │   │
-│   └── agentguard-ui/            # Tauri v2 app
+│   ├── agentguard-installer/     # Scripts de instalación por SO (NUEVO v2)
+│   │   ├── Cargo.toml
+│   │   └── src/
+│   │       └── main.rs           # Bootstrap binary (detecta SO, descarga, instala)
+│   │
+│   └── agentguard-ui/            # Tauri v2 app (Fase 6 — opcional, terminal-first)
 │       ├── Cargo.toml
-│       ├── tauri.conf.json
-│       ├── src/
-│       │   └── main.rs           # Tauri entry point
-│       └── ui/                   # Frontend (Svelte o React)
-│           ├── package.json
-│           ├── src/
-│           │   ├── App.svelte    # o App.tsx
-│           │   ├── Dashboard.svelte
-│           │   ├── Zones.svelte
-│           │   └── Incidents.svelte
-│           └── public/
+│       └── src/
+│           └── lib.rs
 │
 ├── packaging/
 │   ├── linux/
-│   │   ├── agentguard.service    # systemd unit
-│   │   └── install.sh
+│   │   └── agentguard.service    # systemd unit
 │   ├── windows/
 │   │   └── installer.iss         # Inno Setup script
 │   └── macos/
 │       └── launchd.plist
 │
+├── scripts/
+│   ├── build-ebpf.sh             # Compila bytecode eBPF
+│   └── check-no-panic.sh         # CI guard: prohíbe .unwrap()/panic!()
+│
 └── tests/
-    ├── integration/
-    │   ├── test_file_protection.rs
-    │   ├── test_dlp.rs
-    │   └── test_vault.rs
-    └── fixtures/
+    ├── fixtures/
+    │   └── sandbox/              # Datos sintéticos para tests
+    └── integration/              # Tests E2E por módulo
+```
 ```
 
 ---
@@ -2479,59 +2515,40 @@ jobs:
 
 ## 19. Orden de implementación obligatorio
 
-Seguir este orden. **No saltar pasos.**
+> El plan detallado con fases, gates y entregables está en [`PlanDeImplementacion.md`](./PlanDeImplementacion.md).
+> Resumen de fases:
 
-### Fase 1 — Core de protección (semanas 1-3)
+### Fase 0 — Reorganización de crates
 
-```
-[ ] 1.1  Scaffold del workspace Cargo con todos los crates vacíos
-[ ] 1.2  agentguard-common: tipos FileEvent, NetworkEvent, EventType
-[ ] 1.3  agentguard-daemon: config.rs — deserialización de config.toml con serde
-[ ] 1.4  agentguard-daemon: vault.rs — create_snapshot, restore, list, cleanup
-[ ] 1.5  Tests unitarios de vault.rs
-[ ] 1.6  agentguard-ebpf: file_guard.rs — hook file_unlink con mapa de rutas
-[ ] 1.7  agentguard-daemon: kernel_loader.rs — cargar eBPF, poblar mapa, leer ring buffer
-[ ] 1.8  Test manual: verificar que unlink en ruta protegida retorna EPERM
-[ ] 1.9  Fallback userspace con notify crate para kernels sin eBPF LSM
-```
+Separar el daemon monolítico en `agentguard-core` (lógica compartida) + `agentguard-linux` / `agentguard-windows` / `agentguard-macos` (binarios por SO).
 
-### Fase 2 — DLP y daemon completo (semanas 4-5)
+### Fase 1 — Core completo
 
-```
-[ ] 2.1  agentguard-daemon: dlp_proxy.rs — proxy HTTP básico sin HTTPS
-[ ] 2.2  Cargar patrones DLP por defecto + custom del config
-[ ] 2.3  Tests del DLP con requests HTTP sintéticos
-[ ] 2.4  agentguard-daemon: daemon.rs — loop principal con tokio::select!
-[ ] 2.5  agentguard-daemon: ipc_server.rs — socket Unix/Named Pipe
-[ ] 2.6  agentguard-daemon: alerter.rs — notificaciones desktop
-[ ] 2.7  Windows: windows_guard.rs — DENY ACEs + Job Objects
-[ ] 2.8  macOS: macos_guard.rs — chflags uchg fallback
-```
+Vault, DLP proxy, CA local, IPC server, eventos, trait KernelGuard. Todo en `agentguard-core`.
 
-### Fase 3 — CLI y distribución (semana 6)
+### Fase 2 — Linux daemon (MVP)
 
-```
-[ ] 3.1  agentguard-cli: todos los comandos conectados al IPC
-[ ] 3.2  Formateo de output de CLI (tablas, colores con crossterm)
-[ ] 3.3  install.sh para Linux
-[ ] 3.4  systemd service unit
-[ ] 3.5  Windows Inno Setup installer
-[ ] 3.6  CI pipeline (lint, test, build)
-[ ] 3.7  Release pipeline con artifacts y checksums
-```
+eBPF LSM + userspace fallback. Primer binario funcional que bloquea `unlink` real.
 
-### Fase 4 — UI y auto-update (semana 7-8)
+### Fase 3 — CLI + Installer cross-platform (terminal-first)
 
-```
-[ ] 4.1  Scaffold Tauri v2 + Svelte
-[ ] 4.2  Dashboard — status + recent activity
-[ ] 4.3  Protected Zones — CRUD de paths
-[ ] 4.4  Incidents — tabla con filtros
-[ ] 4.5  System tray icon con menú básico
-[ ] 4.6  agentguard-daemon: updater.rs
-[ ] 4.7  Tauri plugin updater para la UI
-[ ] 4.8  Test end-to-end completo en las 3 plataformas
-```
+CLI con todos los comandos. Installer que detecta SO y descarga solo lo necesario. `curl | bash` → listo.
+
+### Fase 4 — Windows daemon
+
+NTFS DENY ACEs + Job Objects + Windows Service.
+
+### Fase 5 — macOS daemon
+
+EndpointSecurity Framework + chflags fallback.
+
+### Fase 6 — UI Tauri (opcional)
+
+Dashboard + Zones + Incidents. Complementa la CLI, no la reemplaza.
+
+### Fase 7 — Auto-updater
+
+Check GitHub releases, SHA256 verify, reemplazo atómico, reload.
 
 ---
 
