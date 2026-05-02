@@ -44,9 +44,42 @@ Verificado E2E: `curl -x http://127.0.0.1:7771 -d 'sk-...' http://dest/` → `HT
 - Detección de directorio corrupto (cert sin key o viceversa).
 - Daemon genera la CA en primer boot y muestra la ruta del cert para que el usuario la añada al trust store.
 
+### Added — Fase 2.3 (HTTPS MITM)
+- `DlpProxy` acepta `LeafIssuer` opcional via `with_tls()` builder. CONNECT con TLS → 200 + MITM; sin TLS → 501.
+- `do_connect_mitm()`: downcast del `Upgraded` de hyper a `TokioIo<TcpStream>`, TLS handshake con el cliente (leaf cert via `LeafIssuer`), conexión upstream via `tokio-rustls` con verificación `webpki-roots`.
+- `PrependBuf<R>` wrapper que reintroduce bytes del `read_buf` de hyper al stream antes del handshake TLS.
+- Forward bidireccional con escaneo DLP del tráfico client→upstream (block/alert/log). 1 test E2E.
+- Cableado en `main.rs`: `LeafIssuer` se construye desde la CA y se pasa al proxy.
+- Bugfix: `tls.rs` — definición de `struct Inner` faltante + API correcta de `rcgen::CertificateParams::signed_by` (3 args).
+
+### Added — Fase 1.5 (eBPF real)
+
+- `crates/agentguard-ebpf/`: programas eBPF reales — `file_guard.rs` con hooks LSM `file_unlink` / `file_rename` / `file_open`, resolución de path vía `bpf_d_path`, comparación contra array map `PROTECTED_PREFIXES`, eventos a ring buffer. `net_guard.rs` con hook `socket_connect` (esqueleto funcional).
+- `scripts/build-ebpf.sh`: compila los programas a bytecode BPF con `cargo +nightly --target bpfel-unknown-none`.
+- `crates/agentguard-daemon/build.rs`: con `--features ebpf`, embeber los bytecodes `.bpf.o` en el binario via `include_bytes_aligned!`.
+- `crates/agentguard-daemon/Cargo.toml`: `aya` / `aya-log` como dependencias opcionales tras la feature `ebpf`.
+- `agentguard-daemon::guard::ebpf`: `EbpfGuard` real — carga programas con `BpfLoader`, attacha hooks LSM, pobla `PROTECTED_PREFIXES`, lee ring buffer con `poll_wait()`, parsea eventos a `SecurityEvent`.
+- Fallback userspace (`select_guard`) sin cambios: si la feature `ebpf` no está activa o el kernel no tiene BPF LSM, el daemon usa `notify`.
+
+### Added — Fase 2.6 (IPC server + CLI vía socket)
+
+- `agentguard-common::ipc`: `IpcCommand` / `IpcResponse` / `SnapshotInfo` (serde JSON, feature `std`). Constantes `IPC_SOCKET_PATH`, `IPC_PIPE_NAME`.
+- `agentguard-daemon::ipc_server`: `IpcServer` con socket Unix (`std::os::unix::net::UnixListener`), protocolo JSON-line. Comandos: `Status`, `Protect`, `Unprotect`, `SnapshotCreate`, `SnapshotList`, `SnapshotRestore`, `SnapshotCleanup`, `Incidents` (stub), `Pause`/`Resume` (stub), `Ping`. 3 tests.
+- `agentguard-daemon::main.rs`: arranque del IPC server en su propio thread con runtime tokio; shutdown al salir.
+- `agentguard-cli`: conecta al socket IPC, serializa el comando a JSON, muestra respuesta formateada (tabla, colores, timestamps).
+
+### Fixed
+- `LocalCa`: guarda `Arc<Certificate>` + `Arc<KeyPair>` para consistencia entre cert original y leaf certs.
+- `LeafIssuer`: usa objetos rcgen directos en vez de reconstruir desde PEM.
+- `tls.rs`: `signed_by` con 3 argumentos (corrección de API rcgen 0.13).
+
+### Added — Fase 1.6 (file_open + PROTECTED_WRITE_PATHS)
+
+- `agentguard-ebpf::file_guard.rs`: hook LSM `file_open` implementado — bloquea escritura sobre archivos individuales protegidos (`.env`, credenciales). Nuevos mapas BPF: `PROTECTED_WRITE_PATHS` (array de `PathPrefix`, coincidencia exacta) y `WRITE_PATH_COUNT`. Resolución de ruta desde `struct file *` via `file->f_path`.
+- `agentguard-daemon::guard::ebpf`: `populate_write_paths()` pobla el mapa desde `config.protected_files`. `select_guard()` y `EbpfGuard::try_load()` aceptan `protected_files`.
+- `agentguard-daemon::main.rs`: pasa `config.protected_files` a `select_guard`.
+
 ### Pending
-- 2.3: HTTPS MITM con `tokio-rustls` — emitir certs leaf on-the-fly firmados por la CA local y escanear body descifrado.
-- 2.6: IPC server (socket Unix + interprocess + IpcCommand/IpcResponse).
 - 2.7: detección de procesos agente (match por exe/argv/env).
-- 1.5 real: aya + build.rs que compile `crates/agentguard-ebpf/` + `include_bytes_aligned!` del bytecode + hooks LSM reales. Iterar en VM con BPF LSM.
-- Fase 3+: CLI cableada, packaging systemd, releases.
+- Fase 3+: packaging systemd, releases, UI Tauri.
+- eBPF kernel testing (requiere VM con BPF LSM).

@@ -13,7 +13,9 @@ use std::path::PathBuf;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use agentguard_daemon::dlp::patterns::compile_all;
+use agentguard_daemon::dlp::tls::LeafIssuer;
 use agentguard_daemon::dlp::DlpProxy;
+use agentguard_daemon::ipc_server::IpcServer;
 use agentguard_daemon::{select_guard, Config, LocalCa, SecurityEvent, Vault, ViolationKind};
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -87,6 +89,19 @@ fn default_ca_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("ca"))
 }
 
+fn default_ipc_socket_path() -> PathBuf {
+    #[cfg(unix)]
+    {
+        use nix::unistd::Uid;
+        if Uid::effective().is_root() {
+            return PathBuf::from("/var/run/agentguard.sock");
+        }
+    }
+    dirs::home_dir()
+        .map(|h| h.join(".agentguard").join("agentguard.sock"))
+        .unwrap_or_else(|| PathBuf::from("agentguard.sock"))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     init_tracing();
@@ -144,16 +159,20 @@ async fn main() -> Result<()> {
     // cuando el proxy DLP soporte HTTPS MITM. Por ahora solo la preparamos.
     let ca_dir = default_ca_dir();
     let ca = LocalCa::load_or_generate(&ca_dir).with_context(|| format!("CA at {ca_dir:?}"))?;
+    let leaf_issuer =
+        LeafIssuer::new(&ca).with_context(|| "failed to initialize TLS leaf certificate issuer")?;
     info!(
         cert_path = ?ca.cert_path(),
-        "CA root ready — add cert to system trust store to enable HTTPS DLP inspection"
+        "CA root ready — HTTPS MITM enabled for DLP proxy"
     );
 
     // Seleccionar guard (eBPF si está disponible, sino userspace).
-    let guard = select_guard(&config.protected_dirs).await?;
+    let guard = select_guard(&config.protected_dirs, &config.protected_files).await?;
+    let guard_backend_name = guard.backend_name().to_string();
+    let guard_level = format!("{:?}", guard.protection_level());
     info!(
-        backend = guard.backend_name(),
-        level = ?guard.protection_level(),
+        backend = %guard_backend_name,
+        level = %guard_level,
         "protection backend ready"
     );
 
@@ -179,7 +198,9 @@ async fn main() -> Result<()> {
             Ok(patterns) => {
                 let action = config.dlp_action()?;
                 let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), config.dlp.proxy_port);
-                let proxy = DlpProxy::new(patterns, action).with_events(event_tx.clone());
+                let proxy = DlpProxy::new(patterns, action)
+                    .with_events(event_tx.clone())
+                    .with_tls(leaf_issuer.clone());
                 match proxy.start(addr).await {
                     Ok(h) => {
                         info!(addr = %h.local_addr(), action = ?action, "DLP proxy started");
@@ -201,7 +222,25 @@ async fn main() -> Result<()> {
         None
     };
 
-    // TODO (Fase 2.6): ipc_server::start
+    // IPC server (Fase 2.6): socket para CLI y UI.
+    let ipc_server = IpcServer::new(
+        vault.clone(),
+        config.clone(),
+        &guard_backend_name,
+        &guard_level,
+    );
+    let ipc_socket_path = default_ipc_socket_path();
+    let ipc_handle = match ipc_server.start(ipc_socket_path.clone()) {
+        Ok(h) => {
+            info!(path = %ipc_socket_path.display(), "IPC server started");
+            Some(h)
+        }
+        Err(e) => {
+            error!(error = %e, "IPC server failed to start — continuing without IPC");
+            None
+        }
+    };
+
     drop(event_tx); // el clon lo mantienen guard + dlp; cuando todos cierren, el rx se cierra.
 
     info!("entering main loop (ctrl-c to quit)");
@@ -224,6 +263,9 @@ async fn main() -> Result<()> {
     info!("AgentGuard daemon shutting down");
     guard_task.abort();
     if let Some(h) = dlp_handle {
+        h.shutdown();
+    }
+    if let Some(h) = ipc_handle {
         h.shutdown();
     }
     Ok(())

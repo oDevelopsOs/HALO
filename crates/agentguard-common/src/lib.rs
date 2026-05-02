@@ -11,6 +11,12 @@
 /// Bumpear en cada cambio breaking del enum `IpcCommand` / `IpcResponse`.
 pub const IPC_PROTOCOL_VERSION: u32 = 1;
 
+/// Ruta por defecto del socket IPC (Unix / Linux).
+pub const IPC_SOCKET_PATH: &str = ".agentguard/agentguard.sock";
+
+/// Nombre del named pipe en Windows.
+pub const IPC_PIPE_NAME: &str = "agentguard";
+
 /// Longitud máxima en bytes de un prefijo de ruta protegida.
 ///
 /// Este valor debe ser el mismo en userspace y en el programa BPF, porque
@@ -122,3 +128,101 @@ mod tests {
         assert_eq!(core::mem::size_of::<FileEvent>(), EXPECTED);
     }
 }
+
+// ------------------------------------------------------------------
+// Tipos del protocolo IPC (solo userspace — feature "std").
+// ------------------------------------------------------------------
+
+#[cfg(feature = "std")]
+mod ipc {
+    use serde::{Deserialize, Serialize};
+
+    #[doc = "Comando enviado del CLI/UI al daemon vía IPC."]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(tag = "command", content = "args")]
+    pub enum IpcCommand {
+        /// Estado general de protección.
+        Status,
+        /// Proteger una ruta.
+        Protect {
+            path: std::string::String,
+            #[serde(default)]
+            watch_only: bool,
+        },
+        /// Desproteger una ruta.
+        Unprotect { path: std::string::String },
+        /// Crear snapshot.
+        SnapshotCreate {
+            #[serde(default = "default_label")]
+            label: std::string::String,
+        },
+        /// Listar snapshots.
+        SnapshotList,
+        /// Restaurar snapshot por ID.
+        SnapshotRestore {
+            id: std::string::String,
+            #[serde(default)]
+            yes: bool,
+        },
+        /// Limpiar snapshots antiguos.
+        SnapshotCleanup { keep_days: u64 },
+        /// Mostrar incidentes recientes.
+        Incidents { last: usize },
+        /// Pausar protección.
+        Pause { minutes: u64 },
+        /// Reanudar protección.
+        Resume,
+        /// Ping (health-check).
+        Ping,
+    }
+
+    fn default_label() -> std::string::String {
+        "manual".into()
+    }
+
+    #[doc = "Respuesta del daemon al CLI/UI vía IPC."]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(tag = "status", content = "data")]
+    pub enum IpcResponse {
+        /// Operación completada con éxito.
+        Ok {
+            #[serde(default)]
+            message: std::string::String,
+        },
+        /// Operación rechazada o error.
+        Error {
+            message: std::string::String,
+        },
+        /// Respuesta a Status.
+        StatusData {
+            version: std::string::String,
+            guard_backend: std::string::String,
+            protection_level: std::string::String,
+            dlp_enabled: bool,
+            protected_dirs: std::vec::Vec<std::string::String>,
+            protected_files: std::vec::Vec<std::string::String>,
+        },
+        /// Respuesta a SnapshotList.
+        SnapshotList {
+            snapshots: std::vec::Vec<SnapshotInfo>,
+        },
+        /// Respuesta a Incidents.
+        Incidents {
+            lines: std::vec::Vec<std::string::String>,
+        },
+        /// Respuesta a Ping.
+        Pong,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct SnapshotInfo {
+        pub id: std::string::String,
+        pub timestamp: u64,
+        pub label: std::string::String,
+        pub files: usize,
+        pub total_size: u64,
+    }
+}
+
+#[cfg(feature = "std")]
+pub use ipc::{IpcCommand, IpcResponse, SnapshotInfo};

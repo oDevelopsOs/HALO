@@ -12,6 +12,8 @@
 
 pub mod patterns;
 pub mod proxy;
+pub mod tls;
 
 pub use patterns::{compile_defaults, CompiledPattern, DEFAULT_PATTERNS};
 pub use proxy::{DlpProxy, DlpProxyHandle};
+pub use tls::{LeafIssuer, TlsError};

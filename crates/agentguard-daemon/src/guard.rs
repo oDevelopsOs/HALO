@@ -81,10 +81,11 @@ pub mod ebpf;
 /// 2. Userspace (`notify`) — funciona siempre.
 pub async fn select_guard(
     protected_paths: &[PathBuf],
+    protected_files: &[PathBuf],
 ) -> Result<Box<dyn KernelGuard>, GuardError> {
     #[cfg(all(target_os = "linux", feature = "ebpf"))]
     {
-        match ebpf::EbpfGuard::try_load(protected_paths).await {
+        match ebpf::EbpfGuard::try_load(protected_paths, protected_files).await {
             Ok(guard) => {
                 tracing::info!(backend = "ebpf", "kernel-level protection active");
                 return Ok(Box::new(guard));

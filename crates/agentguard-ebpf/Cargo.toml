@@ -6,11 +6,13 @@ license = "GPL-2.0-only"
 description = "AgentGuard eBPF LSM programs (kernel-side)"
 publish = false
 
-# Este crate se compila SEPARADO del workspace principal, con:
+# Este crate se compila con:
 #   cargo +nightly build --release --target bpfel-unknown-none -Z build-std=core
 #
-# Está excluido del [workspace] raíz porque el target bpfel-unknown-none
-# es incompatible con muchas dependencias userspace (tokio, etc.).
+# Desde el workspace raíz: scripts/build-ebpf.sh
+#
+# Está excluido del [workspace] porque bpfel-unknown-none es incompatible
+# con dependencias userspace (tokio, etc.).
 
 [[bin]]
 name = "file_guard"
@@ -21,8 +23,8 @@ name = "net_guard"
 path = "src/net_guard.rs"
 
 [dependencies]
-# Fase 1.5: aquí entra aya-bpf + aya-log-ebpf.
-# Por ahora el crate compila para target nativo como stub vacío.
+aya-bpf = "0.1"
+aya-log-ebpf = "0.1"
 agentguard-common = { path = "../agentguard-common", default-features = false }
 
 [profile.release]

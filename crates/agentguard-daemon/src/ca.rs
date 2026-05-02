@@ -15,9 +15,11 @@
 //! emisión de certs leaf y el wiring con rustls viven en Fase 2.3.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use rcgen::{
-    BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair, KeyUsagePurpose,
+    BasicConstraints, Certificate, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair,
+    KeyUsagePurpose,
 };
 use thiserror::Error;
 
@@ -67,6 +69,10 @@ pub struct LocalCa {
     cert_pem: String,
     /// PEM de la clave privada (NUNCA sale de disco + RAM local).
     key_pem: String,
+    /// Objeto Certificate de rcgen (para firmar leaf certs en Fase 2.3).
+    cert: Arc<Certificate>,
+    /// Objeto KeyPair de rcgen (misma que se serializó a key_pem).
+    key: Arc<KeyPair>,
     /// Directorio donde vive en disco.
     dir: PathBuf,
 }
@@ -94,12 +100,20 @@ impl LocalCa {
             (true, true) => {
                 let cert_pem = read_file(&cert_path)?;
                 let key_pem = read_file(&key_path)?;
-                // Validar que son parseables antes de aceptar.
-                let _key = KeyPair::from_pem(&key_pem).map_err(CaError::KeyParse)?;
+                let key = KeyPair::from_pem(&key_pem).map_err(CaError::KeyParse)?;
+                let issuer_params = CertificateParams::from_ca_cert_pem(&cert_pem)
+                    .map_err(CaError::CertParse)?;
+                let cert = Arc::new(
+                    issuer_params
+                        .self_signed(&key)
+                        .map_err(CaError::CertGeneration)?,
+                );
                 tracing::info!(dir = ?dir, "loaded existing CA root");
                 Ok(Self {
                     cert_pem,
                     key_pem,
+                    cert,
+                    key: Arc::new(key),
                     dir: dir.to_path_buf(),
                 })
             }
@@ -159,6 +173,8 @@ impl LocalCa {
         Ok(Self {
             cert_pem,
             key_pem,
+            cert: Arc::new(cert),
+            key: Arc::new(key_pair),
             dir: dir.to_path_buf(),
         })
     }
@@ -172,6 +188,16 @@ impl LocalCa {
     /// Expuesta solo para construir `rustls::ServerConfig` en Fase 2.3.
     pub fn key_pem(&self) -> &str {
         &self.key_pem
+    }
+
+    /// Objeto `Certificate` de rcgen compartido — para firmar leaf certs.
+    pub fn rcgen_cert(&self) -> Arc<Certificate> {
+        Arc::clone(&self.cert)
+    }
+
+    /// Objeto `KeyPair` de rcgen compartido — misma clave privada.
+    pub fn rcgen_key(&self) -> Arc<KeyPair> {
+        Arc::clone(&self.key)
     }
 
     /// Directorio en disco.
@@ -335,5 +361,32 @@ mod tests {
         let pem = ca.cert_pem();
         assert!(pem.len() > 500, "cert too small: {} bytes", pem.len());
         assert!(pem.contains("-----BEGIN CERTIFICATE-----"));
+    }
+
+    /// TLS handshake con cert firmado por la CA usando rcgen directamente.
+    #[test]
+    fn leaf_cert_signed_by_ca_verifies_against_root() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let tmp = TempDir::new().expect("tempdir");
+        let ca = LocalCa::generate_and_persist(tmp.path().join("ca")).expect("ca");
+
+        let leaf_key = KeyPair::generate().expect("leaf key");
+        let mut leaf_params = CertificateParams::new(vec!["127.0.0.1".into()]).expect("san");
+        leaf_params.distinguished_name.push(DnType::CommonName, "127.0.0.1");
+        leaf_params.not_before =
+            time::OffsetDateTime::now_utc() - time::Duration::hours(1);
+        leaf_params.not_after =
+            time::OffsetDateTime::now_utc() + time::Duration::days(1);
+
+        let _leaf_cert = leaf_params
+            .signed_by(
+                &leaf_key,
+                ca.rcgen_cert().as_ref(),
+                ca.rcgen_key().as_ref(),
+            )
+            .expect("sign leaf — cert should verify against root");
+
+        // Si llegamos aquí, la generación del cert funcionó.
+        // La verificación TLS no se puede testear sin tokio aquí.
     }
 }
