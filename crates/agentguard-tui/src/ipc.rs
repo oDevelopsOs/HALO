@@ -8,9 +8,9 @@
 use std::path::PathBuf;
 
 #[cfg(unix)]
-use std::io::{BufRead, BufReader, Write};
-#[cfg(unix)]
 use anyhow::Context;
+#[cfg(unix)]
+use std::io::{BufRead, BufReader, Write};
 
 use agentguard_common::{IpcCommand, IpcResponse, SnapshotInfo};
 
