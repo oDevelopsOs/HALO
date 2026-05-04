@@ -7,26 +7,44 @@
 //! - SIGTERM / SIGINT → graceful shutdown (limpia socket, cierra proxy)
 //! - SIGUSR1 → reload config (pending — Fase 3)
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
+
+#[cfg(unix)]
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+#[cfg(unix)]
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(unix)]
 use std::sync::{Arc, RwLock};
 
+#[cfg(unix)]
 use agentguard_common::SandboxedAgent;
+#[cfg(unix)]
 use agentguard_core::ca::LocalCa;
+#[cfg(unix)]
 use agentguard_core::config::Config;
+#[cfg(unix)]
 use agentguard_core::dlp::patterns::compile_all;
+#[cfg(unix)]
 use agentguard_core::dlp::tls::LeafIssuer;
+#[cfg(unix)]
 use agentguard_core::dlp::DlpProxy;
+#[cfg(unix)]
 use agentguard_core::events::{SecurityEvent, ViolationKind};
+#[cfg(unix)]
 use agentguard_core::ipc_server::IpcServer;
+#[cfg(unix)]
 use agentguard_core::vault::Vault;
+#[cfg(unix)]
 use agentguard_linux::guard::select_guard;
 
+#[cfg(unix)]
 use anyhow::{Context, Result};
 use clap::Parser;
+#[cfg(unix)]
 use tokio::sync::mpsc;
+#[cfg(unix)]
 use tracing::{error, info, warn};
+#[cfg(unix)]
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
@@ -43,6 +61,7 @@ struct Args {
     protect: Vec<PathBuf>,
 }
 
+#[cfg(unix)]
 fn init_tracing() {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,agentguard_core=debug"));

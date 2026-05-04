@@ -17,10 +17,11 @@ mod windows_impl {
     use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, WIN32_ERROR};
     use windows::Win32::System::Diagnostics::Etw::{
         CloseTrace, ControlTraceW, EnableTraceEx2, OpenTraceW, ProcessTrace, StartTraceW,
-        EVENT_CONTROL_CODE_ENABLE_PROVIDER, EVENT_RECORD, EVENT_TRACE_CONTROL_STOP,
-        EVENT_TRACE_LOGFILEW, EVENT_TRACE_PROPERTIES, EVENT_TRACE_REAL_TIME_MODE,
-        PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_REAL_TIME, PROCESSTRACE_HANDLE,
-        TRACE_LEVEL_INFORMATION, WNODE_FLAG_TRACED_GUID,
+        CONTROLTRACE_HANDLE, EVENT_CONTROL_CODE_ENABLE_PROVIDER, EVENT_RECORD,
+        EVENT_TRACE_CONTROL_STOP, EVENT_TRACE_LOGFILEW, EVENT_TRACE_PROPERTIES,
+        EVENT_TRACE_REAL_TIME_MODE, PROCESS_TRACE_MODE_EVENT_RECORD,
+        PROCESS_TRACE_MODE_REAL_TIME, PROCESSTRACE_HANDLE, TRACE_LEVEL_INFORMATION,
+        WNODE_FLAG_TRACED_GUID,
     };
 
     use agentguard_core::config::Config;
@@ -75,7 +76,7 @@ mod windows_impl {
                 (*props).MaximumBuffers = 8;
             }
 
-            let mut session_handle: PROCESSTRACE_HANDLE = PROCESSTRACE_HANDLE { Value: 0 };
+            let mut session_handle: CONTROLTRACE_HANDLE = CONTROLTRACE_HANDLE { Value: 0 };
 
             unsafe {
                 let result = StartTraceW(
@@ -87,7 +88,7 @@ mod windows_impl {
                 if result == ERROR_ALREADY_EXISTS {
                     tracing::debug!("ETW session already exists, reconnecting...");
                     ControlTraceW(
-                        PROCESSTRACE_HANDLE { Value: 0 },
+                        CONTROLTRACE_HANDLE { Value: 0 },
                         windows::core::PCWSTR(session_name.as_ptr()),
                         props,
                         EVENT_TRACE_CONTROL_STOP,
@@ -317,6 +318,7 @@ mod stub_impl {
 }
 
 #[cfg(target_os = "windows")]
+#[allow(unused_imports)]
 pub use windows_impl::*;
 
 #[cfg(not(target_os = "windows"))]

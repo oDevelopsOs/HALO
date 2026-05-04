@@ -23,20 +23,24 @@ pub type LaunchAgentFn =
     Arc<dyn Fn(String, String, Vec<String>, Option<String>) -> Result<u32, String> + Send + Sync>;
 
 /// Máximo de líneas a leer del log de incidentes (evita OOM).
+#[allow(dead_code)]
 const INCIDENTS_MAX_LINES: usize = 500;
 
 /// Helper: adquiere el lock de lectura del config, manejando poison.
+#[allow(dead_code)]
 fn read_config(cfg: &RwLock<Config>) -> Result<RwLockReadGuard<'_, Config>, String> {
     cfg.read().map_err(|e| format!("config lock poisoned: {e}"))
 }
 
 /// Helper: adquiere el lock de escritura del config, manejando poison.
+#[allow(dead_code)]
 fn write_config(cfg: &RwLock<Config>) -> Result<RwLockWriteGuard<'_, Config>, String> {
     cfg.write()
         .map_err(|e| format!("config lock poisoned: {e}"))
 }
 
 /// Estado compartido accesible desde el servidor IPC.
+#[allow(dead_code)]
 pub struct IpcServer {
     vault: Arc<Vault>,
     config: RwLock<Config>,
@@ -154,6 +158,7 @@ impl IpcServer {
         }
     }
 
+    #[allow(dead_code)]
     fn handle_connection(&self, stream: &mut (impl Read + Write)) {
         let mut reader = BufReader::new(&mut *stream);
         let mut line = String::new();
@@ -179,6 +184,7 @@ impl IpcServer {
         let _ = write_response(stream, &response);
     }
 
+    #[allow(dead_code)]
     fn execute(&self, cmd: IpcCommand) -> IpcResponse {
         match cmd {
             IpcCommand::Ping => IpcResponse::Pong,
@@ -562,6 +568,7 @@ impl Drop for IpcShutdown {
     }
 }
 
+#[allow(dead_code)]
 fn write_response(stream: &mut impl Write, response: &IpcResponse) -> std::io::Result<()> {
     let json = serde_json::to_string(response).map_err(std::io::Error::other)?;
     writeln!(stream, "{json}")?;

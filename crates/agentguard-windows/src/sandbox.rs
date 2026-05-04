@@ -111,6 +111,7 @@ mod stub_impl {
 }
 
 #[cfg(target_os = "windows")]
+#[allow(unused_imports)]
 pub use windows_impl::*;
 
 #[cfg(not(target_os = "windows"))]

@@ -182,12 +182,12 @@ impl KernelGuard for WindowsGuard {
     async fn run(mut self: Box<Self>, tx: mpsc::Sender<SecurityEvent>) -> Result<(), GuardError> {
         #[cfg(windows)]
         {
-            use windows::Win32::Foundation::CloseHandle;
+            use windows::Win32::Foundation::{CloseHandle, HANDLE};
 
             let paths = std::mem::take(&mut self.protected_paths);
             let patterns = std::mem::take(&mut self.agent_patterns);
             let mut tracked = std::mem::take(&mut self.tracked_pids);
-            let mut jobs = std::mem::take(&mut self.tracked_jobs);
+            let mut jobs: HashMap<u32, isize> = HashMap::new();
 
             // Watcher de cambios en directorios protegidos
             let (notify_tx, notify_rx) =
@@ -236,9 +236,9 @@ impl KernelGuard for WindowsGuard {
 
             let _ = tokio::join!(watch_handle, scan_handle);
 
-            for (&_pid, &handle) in &jobs {
+            for (&_pid, &handle_val) in &jobs {
                 unsafe {
-                    let _ = CloseHandle(handle);
+                    let _ = CloseHandle(HANDLE(handle_val as *mut std::ffi::c_void));
                 }
             }
             drop(watcher);
@@ -262,7 +262,6 @@ mod win32 {
     //! Módulo interno con toda la lógica específica de Windows.
     //! Aislado aquí para que el resto del crate compile en Linux.
 
-    #[cfg(windows)]
     use std::collections::HashMap;
     use std::collections::HashSet;
     use std::ffi::c_void;
@@ -271,11 +270,9 @@ mod win32 {
     use tokio::sync::mpsc;
     use tracing::{info, warn};
 
+    use super::unix_ts;
+
     use agentguard_core::config::AgentProcess;
-    #[cfg(windows)]
-    use agentguard_core::config::AgentMatch;
-    #[cfg(windows)]
-    use agentguard_core::ViolationKind;
     use agentguard_core::{GuardError, SecurityEvent};
 
     use windows::core::PCWSTR;
@@ -300,7 +297,6 @@ mod win32 {
         SetInformationJobObject, JOBOBJECT_BASIC_LIMIT_INFORMATION,
         JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
-    use windows::Win32::System::Kernel::PROCESS_BASIC_INFORMATION;
     use windows::Win32::System::Threading::{
         GetCurrentProcess, GetCurrentProcessId, OpenProcess, OpenProcessToken,
         PROCESS_QUERY_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE, PROCESS_VM_READ,
@@ -732,7 +728,7 @@ mod win32 {
     pub fn scan_and_contain_agents(
         patterns: &[AgentProcess],
         tracked: &mut HashSet<u32>,
-        jobs: &mut HashMap<u32, HANDLE>,
+        jobs: &mut HashMap<u32, isize>,
         tx: &mpsc::Sender<SecurityEvent>,
     ) {
         let current_pid = unsafe { GetCurrentProcessId() };
@@ -785,7 +781,7 @@ mod win32 {
                                         Ok(job) => match assign_process_to_job(job, h) {
                                             Ok(()) => {
                                                 tracked.insert(pid);
-                                                jobs.insert(pid, job);
+                                                jobs.insert(pid, job.0 as isize);
                                                 info!(
                                                     pid,
                                                     exe = %exe_name,
@@ -854,7 +850,7 @@ mod win32 {
                 Err(_) => {
                     if let Some(job) = jobs.remove(&pid) {
                         unsafe {
-                            let _ = CloseHandle(job);
+                            let _ = CloseHandle(HANDLE(job as *mut std::ffi::c_void));
                         }
                         info!(pid, "released job object for terminated agent");
                     }
@@ -871,7 +867,7 @@ mod win32 {
         for pid in orphan {
             if let Some(job) = jobs.remove(&pid) {
                 unsafe {
-                    let _ = CloseHandle(job);
+                    let _ = CloseHandle(HANDLE(job as *mut std::ffi::c_void));
                 }
             }
         }
@@ -931,6 +927,7 @@ fn unix_ts() -> u64 {
 // ═══════════════════════════════════════════════════════════════
 
 #[cfg(windows)]
+#[allow(unused_imports)]
 use win32::{
     apply_deny_aces, assign_process_to_job, create_restricted_job_for, matches_agent_exe_only,
     matches_agent_full, read_process_command_line, remove_deny_aces, scan_and_contain_agents,
