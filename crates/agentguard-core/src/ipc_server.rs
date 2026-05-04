@@ -102,57 +102,56 @@ impl IpcServer {
         }
         let _ = std::fs::remove_file(&socket_path);
 
-        #[cfg(unix)]
-        let listener = {
-            let listener = std::os::unix::net::UnixListener::bind(&socket_path)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let meta = std::fs::metadata(&socket_path)?;
-                let mut perms = meta.permissions();
-                perms.set_mode(0o600);
-                std::fs::set_permissions(&socket_path, perms)?;
-            }
-            listener
-        };
         #[cfg(not(unix))]
         {
             tracing::warn!("IPC server not supported on this platform");
-            let (shutdown_tx, _shutdown_rx) = oneshot::channel::<()>();
+            let (shutdown_tx, _) = oneshot::channel::<()>();
             return Ok(IpcShutdown {
                 tx: Some(shutdown_tx),
-                socket_path: socket_path.clone(),
+                socket_path,
             });
         }
 
-        let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
-        let sp = socket_path.clone();
+        #[cfg(unix)]
+        {
+            let listener = {
+                use std::os::unix::fs::PermissionsExt;
+                let listener = std::os::unix::net::UnixListener::bind(&socket_path)?;
+                let mut perms = std::fs::metadata(&socket_path)?.permissions();
+                perms.set_mode(0o600);
+                std::fs::set_permissions(&socket_path, perms)?;
+                listener
+            };
 
-        std::thread::spawn(move || {
-            tracing::info!(path = %sp.display(), "IPC server listening");
+            let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
+            let sp = socket_path.clone();
 
-            for stream in listener.incoming() {
-                let mut stream = match stream {
-                    Ok(s) => s,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "accept error");
-                        continue;
+            std::thread::spawn(move || {
+                tracing::info!(path = %sp.display(), "IPC server listening");
+
+                for stream in listener.incoming() {
+                    let mut stream = match stream {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "accept error");
+                            continue;
+                        }
+                    };
+                    if shutdown_rx.try_recv().is_ok() {
+                        break;
                     }
-                };
-                if shutdown_rx.try_recv().is_ok() {
-                    break;
+                    self.handle_connection(&mut stream);
                 }
-                self.handle_connection(&mut stream);
-            }
 
-            let _ = std::fs::remove_file(&sp);
-            tracing::info!("IPC server stopped");
-        });
+                let _ = std::fs::remove_file(&sp);
+                tracing::info!("IPC server stopped");
+            });
 
-        Ok(IpcShutdown {
-            tx: Some(shutdown_tx),
-            socket_path,
-        })
+            Ok(IpcShutdown {
+                tx: Some(shutdown_tx),
+                socket_path,
+            })
+        }
     }
 
     fn handle_connection(&self, stream: &mut (impl Read + Write)) {

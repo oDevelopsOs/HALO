@@ -213,7 +213,7 @@ fn ensure_dir(dir: &Path) -> Result<(), CaError> {
     Ok(())
 }
 
-fn write_file_secure(path: &Path, content: &[u8], mode: u32) -> Result<(), CaError> {
+fn write_file_secure(path: &Path, content: &[u8], _mode: u32) -> Result<(), CaError> {
     std::fs::write(path, content).map_err(|source| CaError::Io {
         path: path.to_path_buf(),
         source,
@@ -221,7 +221,7 @@ fn write_file_secure(path: &Path, content: &[u8], mode: u32) -> Result<(), CaErr
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(mode);
+        let perms = std::fs::Permissions::from_mode(_mode);
         std::fs::set_permissions(path, perms).map_err(|source| CaError::Io {
             path: path.to_path_buf(),
             source,
