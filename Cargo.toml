@@ -5,7 +5,6 @@ members = [
     "crates/agentguard-core",
     "crates/agentguard-linux",
     "crates/agentguard-windows",   # Fase 4 activa
-    "crates/agentguard-macos",     # Fase 5 activa
     "crates/agentguard-cli",
     "crates/agentguard-installer",
     "crates/agentguard-tui",

@@ -87,12 +87,6 @@ crates/
 │   └── main.rs              Entry point Linux (compone core + eBPF)
 │
 ├── agentguard-windows/      BINARIO: daemon para Windows (NTFS ACLs + Job Objects)
-│   ├── guard.rs             WindowsGuard
-│   └── main.rs              Entry point Windows
-│
-├── agentguard-macos/        BINARIO: daemon para macOS (EndpointSecurity + chflags)
-│   ├── guard.rs             MacOsGuard
-│   └── main.rs              Entry point macOS
 │
 ├── agentguard-ebpf/         Programas eBPF (kernel, compilación separada)
 │   ├── file_guard.rs        LSM hooks filesystem
@@ -136,7 +130,6 @@ exclude = ["crates/agentguard-ebpf"]
 | `agentguard-core` | ✓ | ✓ | ✓ | ubuntu + windows + macos |
 | `agentguard-linux` | ✓ | ✗ | ✗ | ubuntu |
 | `agentguard-windows` | ✗ | ✓ | ✗ | windows |
-| `agentguard-macos` | ✗ | ✗ | ✓ | macos |
 | `agentguard-ebpf` | ✓ | ✗ | ✗ | ubuntu (nightly) |
 | `agentguard-cli` | ✓ | ✓ | ✓ | ubuntu (cross) |
 | `agentguard-installer` | ✓ | ✓ | ✓ | ubuntu |
@@ -259,23 +252,11 @@ exclude = ["crates/agentguard-ebpf"]
 **Test:** 7 tests unitarios pasan cross-platform (incluyendo Linux).
 **Pendiente:** Test E2E requiere VM Windows física.
 
-### Fase 5 — macOS daemon ✓ COMPLETADA
+### Fase 5 — macOS daemon (POSTERGADO)
 
 ```
-[x] 5.1  agentguard-macos/guard.rs: MacOsGuard con chflags uchg + FSEvents + proc_listallpids.
-[x] 5.2  Detección de procesos: escaneo vía libc::proc_listallpids + proc_pidpath.
-[x] 5.3  Fallback chflags uchg en modo degraded.
-[x] 5.4  Launch daemon plist (packaging/macos/com.agentguard.daemon.plist).
-[x] 5.5  agentguard-macos/main.rs: entry point completo (core + MacOsGuard + DLP + IPC).
-[x] 5.6  Activado en workspace. Compila cross-platform (full daemon en macOS, stub en Linux).
-[x] 5.7  4 tests unitarios (backend_name, protection_level, matches_agents, new_creates_guard).
-[ ] 5.8  Notarización + Developer ID (requiere Apple Developer Program).
-[ ] 5.9  EndpointSecurity Framework System Extension (requiere entitlement de Apple).
-[ ] 5.10 Test E2E en macOS 13+.
+[ ] 5.1  agentguard-macos/guard.rs: Endpoint Security Framework System Extension.
 ```
-
-**Gate:** Compila y pasa tests en Linux. En macOS real: chflags uchg + FSEvents funcional.
-**Pendiente:** EndpointSecurity + notarización requieren Apple Developer Program.
 
 ### Fase 6 — TUI Terminal (ratatui + crossterm) ✓ COMPLETADA
 
@@ -329,7 +310,7 @@ Ejecutar antes de cada merge a `main`:
 | 2 | Daemon Linux bloquea `unlink` real vía eBPF LSM + fallback userspace. |
 | 3 | CLI funcional + installer que detecta SO y baja solo lo necesario. `curl` → listo. |
 | 4 | Daemon Windows con NTFS DENY ACEs + Job Objects + ETW + AppContainer. |
-| 5 | Daemon macOS con chflags uchg + FSEvents + detección de procesos. |
+| 5 | Daemon macOS con EndpointSecurity (postergado). |
 | 6 | TUI Terminal (ratatui + crossterm, 4 tabs) — reemplaza Tauri. |
 | 7 | Auto-updater (ureq 3, GitHub Releases, SHA256, tar.gz, atomic replace). |
 

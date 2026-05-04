@@ -184,8 +184,9 @@ cargo test --workspace --exclude agentguard-ebpf
 | `agentguard-tui` | 0 | OK |
 | `agentguard-cli` | 11 | OK |
 | `agentguard-windows` | 7 | OK |
-| `agentguard-macos` | 4 | OK |
-| **Total** | **106** | **0 fallos** |
+| `agentguard-tui` | 0 | OK |
+| `agentguard-cli` | 11 | OK |
+| **Total** | **102** | **0 fallos** |
 
 ---
 
