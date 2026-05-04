@@ -1088,15 +1088,15 @@ mod tests {
 
     #[test]
     fn exe_only_fallback() {
-        let patterns = [AgentProcess {
+        let _patterns = [AgentProcess {
             name: "cursor".into(),
             r#match: Default::default(),
         }];
 
         #[cfg(windows)]
         {
-            assert!(matches_agent_exe_only(&patterns, "Cursor.exe"));
-            assert!(!matches_agent_exe_only(&patterns, "explorer.exe"));
+            assert!(matches_agent_exe_only(&_patterns, "Cursor.exe"));
+            assert!(!matches_agent_exe_only(&_patterns, "explorer.exe"));
         }
         #[cfg(not(windows))]
         {
