@@ -99,6 +99,31 @@ enum Command {
         #[arg(long, help = "Write to ~/.agentguard/config.toml")]
         defaults: bool,
     },
+
+    /// Launch an AI agent inside a sandbox (v2.1)
+    Launch {
+        /// Agent executable name (e.g. cursor, claude, windsurf)
+        agent: String,
+        /// Additional arguments for the agent
+        #[arg(trailing_var_arg = true)]
+        args: Vec<String>,
+        /// Force sandbox mode (monitor, sandbox, hybrid)
+        #[arg(long)]
+        mode: Option<String>,
+    },
+
+    /// Check system capabilities (sandbox, eBPF, Landlock)
+    Check,
+
+    /// Interactive first-time setup wizard
+    Setup,
+
+    /// Check for and install updated versions
+    Update {
+        /// Only check, don't install
+        #[arg(long)]
+        check_only: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -141,16 +166,27 @@ fn build_command(cmd: Command) -> IpcCommand {
         Command::Snapshot(SnapshotCmd::List) => IpcCommand::SnapshotList,
         Command::Snapshot(SnapshotCmd::Restore { id, yes }) => IpcCommand::SnapshotRestore { id, yes },
         Command::Snapshot(SnapshotCmd::Cleanup { keep_days }) => IpcCommand::SnapshotCleanup { keep_days },
-        Command::Incidents { last } => IpcCommand::Incidents { last },
+        Command::Incidents { last } => IpcCommand::Incidents { last: Some(last) },
         Command::Pause { minutes } => IpcCommand::Pause { minutes },
         Command::Resume => IpcCommand::Resume,
-        Command::Init { .. } => unreachable!("build_command called with Init"), // unwrap-ok: Init filtered before IPC
+        Command::Launch { agent, args, mode } => IpcCommand::LaunchAgent {
+            exe: agent,
+            cwd: std::env::current_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| ".".to_string()),
+            extra_args: args,
+            mode_override: mode,
+        },
+        Command::Check
+        | Command::Setup
+        | Command::Update { .. }
+        | Command::Init { .. } => unreachable!("build_command called with local-only command"), // unwrap-ok: filtered before IPC
     }
 }
 
 fn green(s: &str) -> String { format!("\x1b[32m{s}\x1b[0m") }
 fn red(s: &str) -> String { format!("\x1b[31m{s}\x1b[0m") }
-fn _yellow(s: &str) -> String { format!("\x1b[33m{s}\x1b[0m") }
+fn yellow(s: &str) -> String { format!("\x1b[33m{s}\x1b[0m") }
 fn bold(s: &str) -> String { format!("\x1b[1m{s}\x1b[0m") }
 fn dim(s: &str) -> String { format!("\x1b[2m{s}\x1b[0m") }
 
@@ -192,8 +228,10 @@ fn format_response(response: IpcResponse) {
             guard_backend,
             protection_level,
             dlp_enabled,
+            paused,
             protected_dirs,
             protected_files,
+            ..
         } => {
             // --- Header ---
             println!("{}", bold(&format!("AgentGuard v{version}")));
@@ -204,6 +242,9 @@ fn format_response(response: IpcResponse) {
             println!("  {} Guard:      {guard_backend} ({protection_level})", guard_icon);
             println!("  {} DLP Proxy:  {}", if dlp_enabled { green("✓") } else { dim("✗") },
                 if dlp_enabled { "active on :7771" } else { "disabled" });
+            if paused {
+                println!("  {} PAUSED — agentguard resume", yellow("⏸"));
+            }
             println!();
 
             // --- Protected paths ---
@@ -230,7 +271,7 @@ fn format_response(response: IpcResponse) {
                 return;
             }
             println!("  {}", bold("Snapshots"));
-            println!("  {:<36}  {:<14}  {:<16}  {:<6}  {}", "ID", "WHEN", "LABEL", "FILES", "SIZE");
+            println!("  {:<36}  {:<14}  {:<16}  {:<6}  SIZE", "ID", "WHEN", "LABEL", "FILES");
             println!("  {}", dim(&"-".repeat(90)));
             for s in &snapshots {
                 let short_id = if s.id.len() > 8 { &s.id[..8] } else { &s.id };
@@ -255,6 +296,9 @@ fn format_response(response: IpcResponse) {
             for line in &lines {
                 println!("  {line}");
             }
+        }
+        IpcResponse::AgentLaunched { sandbox_pid } => {
+            println!("  {}", green(&format!("Agent launched in sandbox (pid={sandbox_pid})")));
         }
     }
 }
@@ -287,6 +331,29 @@ match = { exe = "code", argv_contains_any = ["copilot", "cline", "continue"] }
 [on_violation]
 kill_process = false
 snapshot_on_violation = true
+
+# ── v2.1: AI Agent Sandbox ──────────────────────────────────
+[sandbox]
+modo_por_defecto = "sandbox"
+auto_detectar_agentes = true
+montar_solo_proyecto = true
+morir_con_padre = true
+
+# ── v2.1: Agent Detection ───────────────────────────────────
+[agent_detection]
+known_agents = [
+    { name = "cursor", exe = ["cursor", "Cursor"] },
+    { name = "claude-code", exe = ["claude", "claude-code"] },
+    { name = "windsurf", exe = ["windsurf", "Windsurf"] },
+    { name = "aider", exe = ["aider"] },
+    { name = "vscode-agent", exe = ["code"], argv_contains = ["copilot", "cline"] },
+]
+
+# ── v2.1: Windows ───────────────────────────────────────────
+[windows]
+use_lpac = true
+use_etw = true
+polling_interval_ms = 500
 
 [alerts]
 desktop_notifications = true
@@ -335,16 +402,209 @@ fn handle_init(output: Option<PathBuf>, defaults: bool) -> Result<()> {
     Ok(())
 }
 
+fn handle_setup() -> Result<()> {
+    println!();
+    println!("  {}", bold("AgentGuard v2.1 — First-time Setup"));
+    println!();
+    println!("  Protect your machine from AI agents that go rogue.");
+    println!();
+
+    let cwd = std::env::current_dir()?;
+    println!("  Current directory: {}", cwd.display());
+    print!("  Protect this directory? [Y/n] ");
+    use std::io::{self, BufRead, Write};
+    io::stdout().flush().ok();
+    let stdin = io::stdin();
+    let line = stdin
+        .lock()
+        .lines()
+        .next()
+        .unwrap_or(Ok("y".into()))
+        .unwrap_or("y".into());
+
+    if line.trim().to_lowercase() == "n" {
+        println!();
+        println!("  Ok. You can protect directories manually:");
+        println!("    agentguard protect /your/project");
+        return Ok(());
+    }
+
+    // Connect to daemon and add the path
+    let socket_path = default_socket_path();
+    let mut stream = connect(&socket_path).with_context(|| {
+        format!(
+            "cannot connect to daemon at {socket_path:?}.\n\
+             Is the daemon running? Start it: sudo systemctl start agentguard"
+        )
+    })?;
+
+    let cmd = IpcCommand::AddProtectedPath {
+        path: cwd.display().to_string(),
+    };
+    let json = serde_json::to_string(&cmd)?;
+    writeln!(stream, "{json}")?;
+    stream.flush()?;
+
+    let mut reader = BufReader::new(&mut stream);
+    let mut line = String::new();
+    reader.read_line(&mut line)?;
+
+    let _response: IpcResponse = serde_json::from_str(line.trim())
+        .with_context(|| format!("invalid response: {line}"))?;
+
+    println!();
+    println!("  {}", green("Setup complete!"));
+    println!();
+    println!("  {}  Protected: {}", green("✓"), cwd.display());
+    println!("  {}  DLP Proxy: 127.0.0.1:7771", green("✓"));
+    println!("  {}  Auto-detection of AI agents: active", green("✓"));
+    println!();
+    println!("  From now on, when you open Cursor, Claude, or any agent");
+    println!("  inside this directory, it will be sandboxed.");
+    println!();
+    println!("  Try:  {}", bold("agentguard launch cursor"));
+    println!("        {}", bold("agentguard status"));
+
+    Ok(())
+}
+
+fn handle_check() -> Result<()> {
+    println!();
+    println!("  {}", bold("AgentGuard — System Capabilities Check"));
+    println!();
+
+    // Check sandbox capabilities locally
+    #[cfg(target_os = "linux")]
+    {
+        let bwrap = std::process::Command::new("which")
+            .arg("bwrap")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        let landlock = check_landlock_kernel();
+        let ebpf = std::fs::read_to_string("/sys/kernel/security/lsm")
+            .map(|s| s.contains("bpf"))
+            .unwrap_or(false);
+
+        println!("  bwrap:     {}", if bwrap { green("available") } else { red("not found — install bubblewrap") });
+        println!("  Landlock:  {}", if landlock { green("available") } else { yellow("kernel >= 5.13 required") });
+        println!("  eBPF LSM:  {}", if ebpf { green("available") } else { yellow("kernel >= 5.7 + CONFIG_BPF_LSM required") });
+        println!();
+
+        let effective = if bwrap && landlock {
+            "hybrid"
+        } else if bwrap {
+            "sandbox"
+        } else {
+            "monitor"
+        };
+        println!("  Effective mode: {}", bold(effective));
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        println!("  Platform-specific capabilities not displayed on this OS.");
+    }
+
+    // Also query the daemon for status
+    let socket_path = default_socket_path();
+    if let Ok(mut stream) = connect(&socket_path) {
+        let cmd = IpcCommand::Status;
+        let json = serde_json::to_string(&cmd).unwrap_or_default();
+        let _ = writeln!(stream, "{json}");
+        let _ = stream.flush();
+    }
+
+    println!();
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn check_landlock_kernel() -> bool {
+    let output = std::process::Command::new("uname").arg("-r").output();
+    if let Ok(out) = output {
+        if let Ok(version) = std::str::from_utf8(&out.stdout) {
+            let parts: Vec<u32> = version
+                .trim()
+                .split('.')
+                .take(2)
+                .filter_map(|s| s.parse().ok())
+                .collect();
+            if parts.len() >= 2 {
+                return parts[0] > 5 || (parts[0] == 5 && parts[1] >= 13);
+            }
+        }
+    }
+    false
+}
+
+fn handle_update(check_only: bool) -> Result<()> {
+    use agentguard_core::updater::Updater;
+
+    let updater = Updater::new("tuorg", "agentguard");
+
+    println!("  Checking for updates...");
+
+    match updater.check() {
+        Ok(Some(version)) => {
+            println!("  {} v{version} available (current: v{})",
+                green("✓"), env!("CARGO_PKG_VERSION"));
+
+            if check_only {
+                println!("  Run 'agentguard update' to install.");
+                return Ok(());
+            }
+
+            print!("  Install update? [Y/n] ");
+            use std::io::{self, BufRead, Write};
+            io::stdout().flush().ok();
+            let line = io::stdin().lock().lines().next()
+                .unwrap_or(Ok("y".into()))
+                .unwrap_or("y".into());
+
+            if line.trim().to_lowercase() == "n" {
+                println!("  Cancelled.");
+                return Ok(());
+            }
+
+            println!("  Downloading v{version}...");
+            match updater.update() {
+                Ok(path) => {
+                    println!("  {} Updated to v{version}", green("✓"));
+                    println!("  Binary: {}", path.display());
+                    println!("  Restart the daemon: systemctl restart agentguard");
+                    println!("  Restart TUI if open.");
+                }
+                Err(e) => {
+                    println!("  {} Update failed: {e}", red("✗"));
+                    return Err(anyhow::anyhow!("{e}"));
+                }
+            }
+        }
+        Ok(None) => {
+            println!("  {} Already up to date (v{})",
+                green("✓"), env!("CARGO_PKG_VERSION"));
+        }
+        Err(e) => {
+            println!("  {} Cannot check for updates: {e}", yellow("⚠"));
+        }
+    }
+
+    Ok(())
+}
+
 // ── Main ───────────────────────────────────────────────────
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Init is handled locally (no IPC needed)
-    if matches!(cli.command, Command::Init { .. }) {
+    // Init, Setup, Update and Check are handled locally (no IPC needed)
+    if matches!(cli.command, Command::Init { .. } | Command::Setup | Command::Check | Command::Update { .. }) {
         match cli.command {
             Command::Init { output, defaults } => return handle_init(output, defaults),
-            _ => unreachable!("init handled above"), // unwrap-ok: guarded by outer matches!
+            Command::Setup => return handle_setup(),
+            Command::Check => return handle_check(),
+            Command::Update { check_only } => return handle_update(check_only),
+            _ => unreachable!(), // unwrap-ok: guarded by outer matches!
         }
     }
 
@@ -419,7 +679,7 @@ mod tests {
     fn build_command_incidents() {
         let cmd = build_command(Command::Incidents { last: 42 });
         match cmd {
-            IpcCommand::Incidents { last } => assert_eq!(last, 42),
+            IpcCommand::Incidents { last } => assert_eq!(last, Some(42)),
             _ => panic!("wrong command"),
         }
     }

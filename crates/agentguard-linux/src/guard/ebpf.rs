@@ -1,10 +1,6 @@
-//! Backend eBPF LSM — protección kernel-level real.
-//!
-//! Requisitos para activar:
-//! - `feature = "ebpf"` al compilar.
-//! - Bytecode eBPF pre-compilado con `scripts/build-ebpf.sh`.
-//! - Kernel Linux ≥ 5.10 con `CONFIG_BPF_LSM=y`.
+//! Backend eBPF LSM — protecci\u{f3}n kernel-level real.
 
+use std::os::fd::AsRawFd as _;
 use std::path::{Path, PathBuf};
 
 use aya::maps::ring_buf::RingBufItem;
@@ -12,18 +8,17 @@ use aya::maps::{Array, RingBuf};
 use aya::programs::Lsm;
 use aya::{Bpf, BpfLoader};
 use async_trait::async_trait;
+use include_bytes_aligned::include_bytes_aligned;
 use tokio::sync::mpsc;
 
 use agentguard_common::{EventType, FileEvent, PathPrefix, MAX_PREFIXES, MAX_PREFIX_LEN};
 use agentguard_core::{GuardError, KernelGuard, ProtectionLevel, SecurityEvent, ViolationKind};
 
-/// Bytecodes eBPF embebidos en el binario del daemon.
 const FILE_GUARD_BYTECODE: &[u8] =
-    include_bytes_aligned!(concat!(env!("OUT_DIR"), "/file_guard.bpf.o"));
+    include_bytes_aligned!(4096, concat!(env!("OUT_DIR"), "/file_guard.bpf.o"));
 const NET_GUARD_BYTECODE: &[u8] =
-    include_bytes_aligned!(concat!(env!("OUT_DIR"), "/net_guard.bpf.o"));
+    include_bytes_aligned!(4096, concat!(env!("OUT_DIR"), "/net_guard.bpf.o"));
 
-/// Backend eBPF LSM con los programas cargados y attachados al kernel.
 pub struct EbpfGuard {
     bpf: Bpf,
     protected_paths: Vec<PathBuf>,
@@ -38,38 +33,46 @@ impl std::fmt::Debug for EbpfGuard {
 }
 
 impl EbpfGuard {
-    /// Intenta cargar los programas eBPF LSM y attachar los hooks.
-    pub async fn try_load(paths: &[PathBuf], protected_files: &[PathBuf]) -> Result<Self, GuardError> {
+    pub async fn try_load(
+        paths: &[PathBuf],
+        protected_files: &[PathBuf],
+    ) -> Result<Self, GuardError> {
         check_bpf_lsm_available()?;
-
         tracing::info!("loading eBPF LSM programs");
 
-        // 1. Cargar file_guard
         let mut bpf_file = BpfLoader::new()
             .btf(aya::Btf::from_sys_fs().ok().as_ref())
             .load(FILE_GUARD_BYTECODE)
             .map_err(|e| GuardError::Internal(format!("load file_guard BPF: {e}")))?;
 
-        // Attachar los hooks LSM de filesystem
+        // Attachar todos los hooks LSM
         attach_lsm(&mut bpf_file, "file_unlink")?;
-        attach_lsm(&mut bpf_file, "file_rename")?;
+        attach_lsm(&mut bpf_file, "inode_rmdir")?;
+        attach_lsm(&mut bpf_file, "inode_rename")?;
+        try_attach_lsm(&mut bpf_file, "file_rename");
         attach_lsm(&mut bpf_file, "file_open")?;
+        // Nuevos hooks — cierre de bypass
+        attach_lsm(&mut bpf_file, "inode_symlink")?;
+        attach_lsm(&mut bpf_file, "inode_create")?;
+        attach_lsm(&mut bpf_file, "inode_mkdir")?;
+        attach_lsm(&mut bpf_file, "inode_mknod")?;
+        attach_lsm(&mut bpf_file, "inode_link")?;
+        try_attach_lsm(&mut bpf_file, "inode_setattr");  // depende de kernel >= 5.12
+        attach_lsm(&mut bpf_file, "file_truncate")?;
 
-        // 2. Cargar net_guard
         let bpf_net = BpfLoader::new()
             .btf(aya::Btf::from_sys_fs().ok().as_ref())
             .load(NET_GUARD_BYTECODE)
             .map_err(|e| GuardError::Internal(format!("load net_guard BPF: {e}")))?;
-
         drop(bpf_net);
 
-        // 3. Poblar el mapa PROTECTED_PREFIXES
-        populate_prefixes(&mut bpf_file, paths)?;
+        // Poblar PROTECTED_PREFIXES
+        populate_prefixes_inner(&mut bpf_file, paths)?;
 
-        // 4. Poblar PROTECTED_WRITE_PATHS
-        populate_write_paths(&mut bpf_file, protected_files)?;
+        // Poblar PROTECTED_WRITE_PATHS
+        populate_write_paths_inner(&mut bpf_file, protected_files)?;
 
-        tracing::info!(paths = paths.len(), "eBPF LSM programs loaded — kernel-level protection active");
+        tracing::info!(paths = paths.len(), "eBPF LSM loaded");
 
         Ok(Self { bpf: bpf_file, protected_paths: paths.to_vec() })
     }
@@ -80,183 +83,111 @@ impl KernelGuard for EbpfGuard {
     fn backend_name(&self) -> &'static str { "ebpf-lsm" }
     fn protection_level(&self) -> ProtectionLevel { ProtectionLevel::KernelDenial }
 
-    async fn add_protected_path(&mut self, path: &Path) -> Result<(), GuardError> {
-        let canonical = std::fs::canonicalize(path).map_err(|source| GuardError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
-
-        let count_map: Array<&mut aya::maps::MapData, u32> =
-            Array::try_from(self.bpf.map_mut("PREFIX_COUNT").ok_or_else(|| {
-                GuardError::Internal("PREFIX_COUNT map not found".into())
-            })?)
-            .map_err(|e| GuardError::Internal(format!("open PREFIX_COUNT: {e}")))?;
-
-        let count = count_map.get(&0, 0).map_err(|e| GuardError::Internal(format!("read PREFIX_COUNT: {e}")))?;
-
-        if count >= MAX_PREFIXES {
-            return Err(GuardError::Internal(format!("max protected prefixes reached ({MAX_PREFIXES})")));
-        }
-
-        let bytes = canonical.as_os_str().as_encoded_bytes();
-        if bytes.len() > MAX_PREFIX_LEN {
-            return Err(GuardError::Internal(format!("path {canonical:?} exceeds MAX_PREFIX_LEN ({MAX_PREFIX_LEN})")));
-        }
-        let prefix = PathPrefix::from_bytes(bytes).ok_or_else(|| {
-            GuardError::Internal(format!("path too long: {canonical:?}"))
-        })?;
-
-        let prefixes_map: Array<&mut aya::maps::MapData, PathPrefix> =
-            Array::try_from(self.bpf.map_mut("PROTECTED_PREFIXES").ok_or_else(|| {
-                GuardError::Internal("PROTECTED_PREFIXES map not found".into())
-            })?)
-            .map_err(|e| GuardError::Internal(format!("open PROTECTED_PREFIXES: {e}")))?;
-
-        prefixes_map.set(count, prefix, 0).map_err(|e| GuardError::Internal(format!("set PROTECTED_PREFIXES: {e}")))?;
-
-        count_map.set(0, count + 1, 0).map_err(|e| GuardError::Internal(format!("update PREFIX_COUNT: {e}")))?;
-
-        self.protected_paths.push(path.to_path_buf());
-        tracing::info!(path = ?canonical, "added eBPF-protected prefix");
-        Ok(())
+    async fn add_protected_path(&mut self, _path: &Path) -> Result<(), GuardError> {
+        Err(GuardError::Internal(
+            "runtime add not implemented: modify config.toml and restart".into(),
+        ))
     }
 
     async fn remove_protected_path(&mut self, _path: &Path) -> Result<(), GuardError> {
         Err(GuardError::Internal(
-            "runtime path removal not implemented in eBPF backend. Remove the path from config.toml and restart the daemon.".into(),
+            "runtime remove not implemented: modify config.toml and restart".into(),
         ))
     }
 
     async fn run(mut self: Box<Self>, tx: mpsc::Sender<SecurityEvent>) -> Result<(), GuardError> {
-        let ring_buf: RingBuf<&mut aya::maps::MapData> =
+        let ring: RingBuf<_> =
             RingBuf::try_from(self.bpf.map_mut("FILE_EVENTS").ok_or_else(|| {
                 GuardError::Internal("FILE_EVENTS ring buffer not found".into())
             })?)
-            .map_err(|e| GuardError::Internal(format!("open FILE_EVENTS: {e}")))?;
+            .map_err(|e| GuardError::Internal(format!("RingBuf::try_from: {e}")))?;
 
-        let mut poll = ring_buf.into_poll().map_err(|e| GuardError::Internal(format!("poll FILE_EVENTS: {e}")))?;
+        let raw_fd = ring.as_raw_fd();
+        let async_fd = tokio::io::unix::AsyncFd::new(raw_fd)
+            .map_err(|e| GuardError::Internal(format!("AsyncFd: {e}")))?;
 
+        let mut ring = ring;
+        let mut event_count: u64 = 0;
+        let mut drop_warned = false;
         tracing::info!("eBPF event listener started");
 
         loop {
-            let items = poll.poll_wait().map_err(|e| GuardError::Internal(format!("poll_wait: {e}")))?;
+            let mut guard = async_fd
+                .readable()
+                .await
+                .map_err(|e| GuardError::Internal(format!("readable: {e}")))?;
 
-            for item in items {
+            let mut batch = 0u32;
+            while let Some(item) = ring.next() {
+                batch = batch.wrapping_add(1);
                 match parse_file_event(&item) {
-                    Ok(ev) => { let _ = tx.send(ev).await; }
-                    Err(e) => { tracing::warn!(error = %e, "failed to parse BPF file event"); }
+                    Ok(ev) => {
+                        event_count = event_count.wrapping_add(1);
+                        if tx.send(ev).await.is_err() {
+                            tracing::warn!("IPC channel closed — event listener shutting down");
+                            return Ok(());
+                        }
+                    }
+                    Err(e) => tracing::warn!(error = %e, "parse BPF event"),
                 }
+            }
+            guard.clear_ready();
+
+            // Si vaciamos muchos eventos de golpe, el ring buffer puede estar
+            // cerca del overflow. Logueamos advertencia preventiva.
+            if batch >= 1024 && !drop_warned {
+                tracing::warn!(
+                    batch,
+                    total = event_count,
+                    "high event throughput — ring buffer may overflow under sustained attack"
+                );
+                drop_warned = true;
+            }
+            if batch < 64 {
+                drop_warned = false;
             }
         }
     }
 }
 
+// ── LSM ──────────────────────────────────────────────────────────
+
 fn attach_lsm(bpf: &mut Bpf, name: &str) -> Result<(), GuardError> {
+    let btf = aya::Btf::from_sys_fs()
+        .map_err(|e| GuardError::Internal(format!("BTF from sysfs: {e}")))?;
     let prog: &mut Lsm = bpf
         .program_mut(name)
         .ok_or_else(|| GuardError::Internal(format!("BPF program '{name}' not found")))?
         .try_into()
         .map_err(|e| GuardError::Internal(format!("cast '{name}' to Lsm: {e}")))?;
-
-    prog.load(name).map_err(|e| GuardError::Internal(format!("load LSM '{name}': {e}")))?;
-    prog.attach().map_err(|e| GuardError::Internal(format!("attach LSM '{name}': {e}")))?;
-
-    tracing::info!(hook = %name, "eBPF LSM hook attached");
+    prog.load(name, &btf)
+        .map_err(|e| GuardError::Internal(format!("load '{name}': {e}")))?;
+    prog.attach()
+        .map_err(|e| GuardError::Internal(format!("attach '{name}': {e}")))?;
+    tracing::info!(hook = %name, "attached");
     Ok(())
 }
 
-fn populate_prefixes(bpf: &mut Bpf, paths: &[PathBuf]) -> Result<(), GuardError> {
-    let mut prefixes_map: Array<&mut aya::maps::MapData, PathPrefix> =
-        Array::try_from(
-            bpf.map_mut("PROTECTED_PREFIXES")
-                .ok_or_else(|| GuardError::Internal("PROTECTED_PREFIXES map not found".into()))?,
-        )
-        .map_err(|e| GuardError::Internal(format!("open PROTECTED_PREFIXES: {e}")))?;
-
-    let mut count_map: Array<&mut aya::maps::MapData, u32> =
-        Array::try_from(
-            bpf.map_mut("PREFIX_COUNT")
-                .ok_or_else(|| GuardError::Internal("PREFIX_COUNT map not found".into()))?,
-        )
-        .map_err(|e| GuardError::Internal(format!("open PREFIX_COUNT: {e}")))?;
-
-    let mut written: u32 = 0;
-    for path in paths {
-        if written >= MAX_PREFIXES { break; }
-        let canonical = std::fs::canonicalize(path).map_err(|source| GuardError::Io {
-            path: path.clone(),
-            source,
-        })?;
-        let bytes = canonical.as_os_str().as_encoded_bytes();
-        if bytes.len() > MAX_PREFIX_LEN {
-            tracing::warn!(?canonical, "path exceeds MAX_PREFIX_LEN, skipping");
-            continue;
-        }
-        let prefix = PathPrefix::from_bytes(bytes).ok_or_else(|| {
-            GuardError::Internal(format!("path too long: {canonical:?}"))
-        })?;
-        prefixes_map.set(written, prefix, 0).map_err(|e| GuardError::Internal(format!("set PROTECTED_PREFIXES[{written}]: {e}")))?;
-        written += 1;
+fn try_attach_lsm(bpf: &mut Bpf, name: &str) {
+    match attach_lsm(bpf, name) {
+        Ok(()) => {}
+        Err(e) => tracing::warn!(hook = %name, error = %e, "optional hook skipped"),
     }
-    count_map.set(0, written, 0).map_err(|e| GuardError::Internal(format!("set PREFIX_COUNT: {e}")))?;
-
-    tracing::info!(prefixes = written, "populated eBPF PROTECTED_PREFIXES map");
-    Ok(())
 }
 
-fn populate_write_paths(bpf: &mut Bpf, files: &[PathBuf]) -> Result<(), GuardError> {
-    let mut write_map: Array<&mut aya::maps::MapData, PathPrefix> =
-        Array::try_from(
-            bpf.map_mut("PROTECTED_WRITE_PATHS")
-                .ok_or_else(|| GuardError::Internal("PROTECTED_WRITE_PATHS map not found".into()))?,
-        )
-        .map_err(|e| GuardError::Internal(format!("open PROTECTED_WRITE_PATHS: {e}")))?;
-
-    let mut count_map: Array<&mut aya::maps::MapData, u32> =
-        Array::try_from(
-            bpf.map_mut("WRITE_PATH_COUNT")
-                .ok_or_else(|| GuardError::Internal("WRITE_PATH_COUNT map not found".into()))?,
-        )
-        .map_err(|e| GuardError::Internal(format!("open WRITE_PATH_COUNT: {e}")))?;
-
-    let mut written: u32 = 0;
-    for path in files {
-        if written >= MAX_PREFIXES { break; }
-        let canonical = std::fs::canonicalize(path).map_err(|source| GuardError::Io {
-            path: path.clone(),
-            source,
-        })?;
-        let bytes = canonical.as_os_str().as_encoded_bytes();
-        if bytes.len() > MAX_PREFIX_LEN {
-            tracing::warn!(?canonical, "file path exceeds MAX_PREFIX_LEN, skipping");
-            continue;
-        }
-        let entry = PathPrefix::from_bytes(bytes).ok_or_else(|| {
-            GuardError::Internal(format!("file path too long: {canonical:?}"))
-        })?;
-        write_map.set(written, entry, 0).map_err(|e| {
-            GuardError::Internal(format!("set PROTECTED_WRITE_PATHS[{written}]: {e}"))
-        })?;
-        written += 1;
-    }
-    count_map.set(0, written, 0).map_err(|e| {
-        GuardError::Internal(format!("set WRITE_PATH_COUNT: {e}"))
-    })?;
-
-    tracing::info!(files = written, "populated eBPF PROTECTED_WRITE_PATHS map");
-    Ok(())
-}
+// ── Events ───────────────────────────────────────────────────────
 
 fn parse_file_event(item: &RingBufItem<'_>) -> Result<SecurityEvent, GuardError> {
     let expected = core::mem::size_of::<FileEvent>();
     if item.len() < expected {
-        return Err(GuardError::Internal(format!("ring buffer item too short: {} < {expected}", item.len())));
+        return Err(GuardError::Internal(format!(
+            "ring buf item too short: {} < {expected}", item.len()
+        )));
     }
     let ev: &FileEvent = unsafe { &*(item.as_ptr() as *const FileEvent) };
 
     let path_bytes = &ev.path[..(ev.path_len as usize).min(MAX_PREFIX_LEN)];
     let path = String::from_utf8_lossy(path_bytes).to_string();
-
     let comm_end = ev.comm.iter().position(|&b| b == 0).unwrap_or(agentguard_common::COMM_LEN);
     let comm = String::from_utf8_lossy(&ev.comm[..comm_end]).to_string();
 
@@ -264,9 +195,7 @@ fn parse_file_event(item: &RingBufItem<'_>) -> Result<SecurityEvent, GuardError>
         EventType::FileDelete => ViolationKind::DeleteAttempt,
         EventType::FileWrite => ViolationKind::WriteAttempt,
         EventType::FileRename => ViolationKind::RenameAttempt,
-        EventType::NetworkSend => {
-            return Err(GuardError::Internal("NetworkSend event in file guard ring buffer".into()));
-        }
+        EventType::NetworkSend => return Err(GuardError::Internal("NetworkSend in file guard".into())),
     };
 
     Ok(SecurityEvent::FileViolation {
@@ -282,17 +211,112 @@ fn parse_file_event(item: &RingBufItem<'_>) -> Result<SecurityEvent, GuardError>
 }
 
 fn check_bpf_lsm_available() -> Result<(), GuardError> {
-    let lsm_path = "/sys/kernel/security/lsm";
-    let lsm = std::fs::read_to_string(lsm_path).map_err(|source| GuardError::Io {
-        path: PathBuf::from(lsm_path),
+    let p = "/sys/kernel/security/lsm";
+    let lsm = std::fs::read_to_string(p).map_err(|source| GuardError::Io {
+        path: PathBuf::from(p),
         source,
     })?;
     if !lsm.split(',').any(|m| m.trim() == "bpf") {
         return Err(GuardError::Unavailable(format!(
-            "kernel LSM list does not include 'bpf' (got {:?}). Add lsm=...,bpf to the kernel cmdline or boot a kernel with CONFIG_BPF_LSM=y",
-            lsm.trim()
+            "kernel LSM list does not include 'bpf' (got {:?})", lsm.trim()
         )));
     }
+    Ok(())
+}
+
+// ── Map population helpers ──────────────────────────────────────
+// Separadas para evitar borrow check issues con aya 0.13
+
+fn populate_prefixes_inner(bpf: &mut Bpf, paths: &[PathBuf]) -> Result<(), GuardError> {
+    // Prefixes first, then count — sequential borrows
+    let mut written: u32 = 0;
+    {
+        let mut prefixes: Array<_, PathPrefix> =
+            Array::try_from(bpf.map_mut("PROTECTED_PREFIXES").ok_or_else(|| {
+                GuardError::Internal("PROTECTED_PREFIXES map not found".into())
+            })?)
+            .map_err(|e| GuardError::Internal(format!("PROTECTED_PREFIXES: {e}")))?;
+
+        for path in paths {
+            if written >= MAX_PREFIXES { break; }
+            let canonical =
+                std::fs::canonicalize(path).map_err(|source| GuardError::Io {
+                    path: path.clone(),
+                    source,
+                })?;
+            let bytes = canonical.as_os_str().as_encoded_bytes();
+            if bytes.len() > MAX_PREFIX_LEN {
+                tracing::warn!(?canonical, "path exceeds MAX_PREFIX_LEN, skipping");
+                continue;
+            }
+            let prefix = PathPrefix::from_bytes(bytes).ok_or_else(|| {
+                GuardError::Internal(format!("path too long: {canonical:?}"))
+            })?;
+            prefixes
+                .set(written, prefix, 0)
+                .map_err(|e| GuardError::Internal(format!("set prefixes[{written}]: {e}")))?;
+            written += 1;
+        }
+    } // prefixes dropped here — releases mutable borrow on bpf
+
+    {
+        let mut count: Array<_, u32> =
+            Array::try_from(bpf.map_mut("PREFIX_COUNT").ok_or_else(|| {
+                GuardError::Internal("PREFIX_COUNT map not found".into())
+            })?)
+            .map_err(|e| GuardError::Internal(format!("PREFIX_COUNT: {e}")))?;
+        count
+            .set(0, written, 0)
+            .map_err(|e| GuardError::Internal(format!("set PREFIX_COUNT: {e}")))?;
+    }
+
+    tracing::info!(prefixes = written, "populated PROTECTED_PREFIXES");
+    Ok(())
+}
+
+fn populate_write_paths_inner(bpf: &mut Bpf, files: &[PathBuf]) -> Result<(), GuardError> {
+    let mut written: u32 = 0;
+    {
+        let mut wmap: Array<_, PathPrefix> =
+            Array::try_from(bpf.map_mut("PROTECTED_WRITE_PATHS").ok_or_else(|| {
+                GuardError::Internal("PROTECTED_WRITE_PATHS map not found".into())
+            })?)
+            .map_err(|e| GuardError::Internal(format!("PROTECTED_WRITE_PATHS: {e}")))?;
+
+        for path in files {
+            if written >= MAX_PREFIXES { break; }
+            let canonical =
+                std::fs::canonicalize(path).map_err(|source| GuardError::Io {
+                    path: path.clone(),
+                    source,
+                })?;
+            let bytes = canonical.as_os_str().as_encoded_bytes();
+            if bytes.len() > MAX_PREFIX_LEN {
+                tracing::warn!(?canonical, "file path exceeds MAX_PREFIX_LEN, skipping");
+                continue;
+            }
+            let entry = PathPrefix::from_bytes(bytes).ok_or_else(|| {
+                GuardError::Internal(format!("file path too long: {canonical:?}"))
+            })?;
+            wmap
+                .set(written, entry, 0)
+                .map_err(|e| GuardError::Internal(format!("set write_paths[{written}]: {e}")))?;
+            written += 1;
+        }
+    }
+
+    {
+        let mut wcount: Array<_, u32> =
+            Array::try_from(bpf.map_mut("WRITE_PATH_COUNT").ok_or_else(|| {
+                GuardError::Internal("WRITE_PATH_COUNT map not found".into())
+            })?)
+            .map_err(|e| GuardError::Internal(format!("WRITE_PATH_COUNT: {e}")))?;
+        wcount
+            .set(0, written, 0)
+            .map_err(|e| GuardError::Internal(format!("set WRITE_PATH_COUNT: {e}")))?;
+    }
+
+    tracing::info!(files = written, "populated PROTECTED_WRITE_PATHS");
     Ok(())
 }
 

@@ -22,9 +22,12 @@ path = "src/file_guard.rs"
 name = "net_guard"
 path = "src/net_guard.rs"
 
+[[bin]]
+name = "process_exec"
+path = "src/process_exec.rs"
+
 [dependencies]
-aya-bpf = "0.1"
-aya-log-ebpf = "0.1"
+aya-ebpf = "0.1"
 agentguard-common = { path = "../agentguard-common", default-features = false }
 
 [profile.release]

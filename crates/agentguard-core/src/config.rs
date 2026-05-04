@@ -49,7 +49,7 @@ pub enum ConfigError {
 
 /// Top-level config. Coincide con la estructura del `config.toml` descrita
 /// en `README.md` §15.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default)]
     pub agentguard: Meta,
@@ -78,8 +78,20 @@ pub struct Config {
     #[serde(default)]
     pub dlp: DlpConfig,
 
+    /// v2.1: Sandbox configuration.
+    #[serde(default)]
+    pub sandbox: SandboxConfig,
+
+    /// v2.1: Agent detection configuration.
+    #[serde(default)]
+    pub agent_detection: AgentDetection,
+
     #[serde(default)]
     pub updates: Updates,
+
+    /// v2.1: Windows-specific configuration.
+    #[serde(default)]
+    pub windows: WindowsConfig,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -235,6 +247,73 @@ impl DlpAction {
     }
 }
 
+// ─── v2.1: Sandbox Configuration ─────────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SandboxConfig {
+    #[serde(default = "default_sandbox_mode")]
+    pub modo_por_defecto: String,
+    #[serde(default = "default_true")]
+    pub auto_detectar_agentes: bool,
+    #[serde(default = "default_true")]
+    pub montar_solo_proyecto: bool,
+    #[serde(default = "default_true")]
+    pub morir_con_padre: bool,
+    #[serde(default)]
+    pub bwrap_extra_args: Vec<String>,
+}
+
+impl Default for SandboxConfig {
+    fn default() -> Self {
+        Self {
+            modo_por_defecto: default_sandbox_mode(),
+            auto_detectar_agentes: true,
+            montar_solo_proyecto: true,
+            morir_con_padre: true,
+            bwrap_extra_args: Vec::new(),
+        }
+    }
+}
+
+fn default_sandbox_mode() -> String {
+    "sandbox".to_string()
+}
+
+// ─── v2.1: Agent Detection Configuration ─────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct AgentDetection {
+    #[serde(default)]
+    pub known_agents: Vec<KnownAgent>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct KnownAgent {
+    pub name: String,
+    #[serde(default)]
+    pub exe: Vec<String>,
+    #[serde(default)]
+    pub argv_contains: Vec<String>,
+    #[serde(default)]
+    pub env_has: Option<String>,
+}
+
+// ─── v2.1: Windows Configuration ─────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct WindowsConfig {
+    #[serde(default = "default_true")]
+    pub use_lpac: bool,
+    #[serde(default = "default_true")]
+    pub use_etw: bool,
+    #[serde(default = "default_windows_polling_interval")]
+    pub polling_interval_ms: u64,
+}
+
+fn default_windows_polling_interval() -> u64 {
+    500
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Updates {
     #[serde(default = "default_true")]
@@ -269,22 +348,6 @@ fn default_true() -> bool {
     true
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            agentguard: Meta::default(),
-            protected_dirs: Vec::new(),
-            protected_files: Vec::new(),
-            agent_processes: Vec::new(),
-            on_violation: OnViolation::default(),
-            alerts: Alerts::default(),
-            vault: VaultConfig::default(),
-            dlp: DlpConfig::default(),
-            updates: Updates::default(),
-        }
-    }
-}
-
 impl Config {
     /// Lee y parsea un `config.toml` desde la ruta indicada. No realiza
     /// expansión de `~` ni canonicalización (usar [`Config::resolve`] para
@@ -299,6 +362,7 @@ impl Config {
     }
 
     /// Parsea un `config.toml` desde un string.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Result<Self, ConfigError> {
         let cfg: Config = toml::from_str(s)?;
         cfg.validate()?;

@@ -7,11 +7,12 @@
 //! - SIGTERM / SIGINT → graceful shutdown (limpia socket, cierra proxy)
 //! - SIGUSR1 → reload config (pending — Fase 3)
 
-mod guard;
-
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 
+use agentguard_common::SandboxedAgent;
 use agentguard_core::ca::LocalCa;
 use agentguard_core::config::Config;
 use agentguard_core::dlp::patterns::compile_all;
@@ -20,7 +21,7 @@ use agentguard_core::dlp::DlpProxy;
 use agentguard_core::events::{SecurityEvent, ViolationKind};
 use agentguard_core::ipc_server::IpcServer;
 use agentguard_core::vault::Vault;
-use guard::select_guard;
+use agentguard_linux::guard::select_guard;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -163,6 +164,26 @@ async fn main() -> Result<()> {
         "CA root ready — HTTPS MITM enabled for DLP proxy"
     );
 
+    // ── v2.1: Sandbox capabilities ─────────────────────────
+    let sandbox_caps = agentguard_linux::sandbox::SandboxLauncher::check_capabilities();
+    let effective_mode = sandbox_caps.effective_mode(&config.sandbox.modo_por_defecto);
+    info!(
+        capabilities = %sandbox_caps.report(),
+        requested_mode = %config.sandbox.modo_por_defecto,
+        effective_mode,
+        "sandbox capabilities checked"
+    );
+    if effective_mode != config.sandbox.modo_por_defecto {
+        warn!(
+            "requested mode '{}' not available, using '{}'",
+            config.sandbox.modo_por_defecto,
+            effective_mode
+        );
+        if !sandbox_caps.bwrap_available {
+            warn!("to enable sandbox mode: sudo apt install bubblewrap");
+        }
+    }
+
     // ── Guard (eBPF o userspace) ────────────────────────────
     let guard = select_guard(&config.protected_dirs, &config.protected_files).await?;
     let guard_backend_name = guard.backend_name().to_string();
@@ -182,6 +203,45 @@ async fn main() -> Result<()> {
             error!(error = %e, "protection backend crashed");
         }
     });
+
+    // ── Agent scanner (/proc) ───────────────────────────────
+    let agent_patterns = config.agent_processes.clone();
+    if !agent_patterns.is_empty() {
+        let scan_tx = event_tx.clone();
+        tokio::spawn(agentguard_linux::guard::agents::scan_loop(agent_patterns, scan_tx));
+        info!(count = config.agent_processes.len(), "agent process scanner started");
+    } else {
+        info!("no agent process patterns configured — scanner disabled");
+    }
+
+    // ── v2.1: Process watcher (eBPF tracepoint) ─────────────
+    #[cfg(feature = "ebpf")]
+    {
+        if !config.agent_detection.known_agents.is_empty()
+            && config.sandbox.auto_detectar_agentes
+        {
+            let watcher_config = config.clone();
+            let watcher_tx = event_tx.clone();
+            let watcher_cfg = Arc::new(tokio::sync::RwLock::new(watcher_config));
+            tokio::spawn(async move {
+                match agentguard_linux::process_watcher::ProcessWatcher::load(
+                    &watcher_cfg.read().await,
+                ) {
+                    Ok(watcher) => watcher.run(watcher_cfg, watcher_tx).await,
+                    Err(e) => {
+                        warn!(
+                            error = %e,
+                            "ProcessWatcher eBPF failed — agent detection via /proc scanner only"
+                        );
+                    }
+                }
+            });
+            info!(
+                agents = config.agent_detection.known_agents.len(),
+                "process watcher (eBPF tracepoint) started"
+            );
+        }
+    }
 
     // ── DLP proxy ───────────────────────────────────────────
     let dlp_handle = if config.dlp.enabled {
@@ -221,12 +281,44 @@ async fn main() -> Result<()> {
     };
 
     // ── IPC server ──────────────────────────────────────────
-    let ipc_server = IpcServer::new(
+    let log_path = incidents_log_path();
+    let paused = Arc::new(AtomicBool::new(false));
+
+    // v2.1: shared state for sandbox tracking and incident counting
+    let active_sandboxes: Arc<RwLock<Vec<SandboxedAgent>>> =
+        Arc::new(RwLock::new(Vec::new()));
+    let incidents_counter = Arc::new(AtomicU64::new(0));
+
+    let ipc_server = IpcServer::builder(
         vault.clone(),
         config.clone(),
         &guard_backend_name,
         &guard_level,
     )
+    .incidents_log(log_path.clone())
+    .paused(paused.clone())
+    .sandbox_mode(effective_mode.to_string())
+    .capabilities(sandbox_caps.report())
+    .active_sandboxes(active_sandboxes.clone())
+    .incidents_count(incidents_counter.clone())
+    .launch_agent_fn(Arc::new(
+        {
+            let cfg = config.clone();
+            move |exe, cwd, _extra_args, mode_override| {
+                let cfg = cfg.clone();
+                let mode = mode_override
+                    .unwrap_or_else(|| cfg.sandbox.modo_por_defecto.clone());
+                let use_landlock = mode == "hybrid";
+                let project_dir = PathBuf::from(cwd);
+                let launcher = agentguard_linux::sandbox::SandboxLauncher::new(cfg);
+                let rt = tokio::runtime::Runtime::new()
+                    .map_err(|e| format!("tokio: {e}"))?;
+                rt.block_on(launcher.launch(&exe, &project_dir, use_landlock))
+                    .map_err(|e| format!("sandbox: {e}"))
+            }
+        },
+    ))
+    .build()
     .with_context(|| "failed to create IPC server")?;
     let ipc_socket_path = default_ipc_socket_path();
     let ipc_handle = match ipc_server.start(ipc_socket_path.clone()) {
@@ -243,12 +335,14 @@ async fn main() -> Result<()> {
     drop(event_tx); // los clones los mantienen guard + dlp
 
     // ── Main loop ───────────────────────────────────────────
-    let log_path = incidents_log_path();
     info!(path = %log_path.display(), "incidents log ready");
 
     let vault_for_events = vault.clone();
     let snapshot_on_violation = config.on_violation.snapshot_on_violation;
     let violation_paths = config.protected_dirs.clone();
+    let sandboxes_for_events = active_sandboxes.clone();
+    let counter_for_events = incidents_counter.clone();
+    let alerts_enabled = config.alerts.desktop_notifications;
 
     info!("entering main loop (SIGTERM / ctrl-c to quit)");
 
@@ -263,13 +357,23 @@ async fn main() -> Result<()> {
     loop {
         tokio::select! {
             Some(event) = event_rx.recv() => {
-                persist_incident(&log_path, &event).await;
-                handle_event(
-                    &vault_for_events,
-                    snapshot_on_violation,
-                    &violation_paths,
-                    event,
-                ).await;
+                if paused.load(Ordering::SeqCst) {
+                    // Protection paused — log but don't react
+                    tracing::debug!(kind = ?event, "event received while paused");
+                    persist_incident(&log_path, &event).await;
+                    counter_for_events.fetch_add(1, Ordering::SeqCst);
+                } else {
+                    persist_incident(&log_path, &event).await;
+                    counter_for_events.fetch_add(1, Ordering::SeqCst);
+                    handle_event(
+                        &vault_for_events,
+                        snapshot_on_violation,
+                        &violation_paths,
+                        event,
+                        &sandboxes_for_events,
+                        alerts_enabled,
+                    ).await;
+                }
             }
             _ = tokio::signal::ctrl_c() => {
                 info!("SIGINT received — shutting down");
@@ -324,6 +428,8 @@ async fn handle_event(
     snapshot_on_violation: bool,
     protected_paths: &[PathBuf],
     event: SecurityEvent,
+    active_sandboxes: &RwLock<Vec<SandboxedAgent>>,
+    alerts_enabled: bool,
 ) {
     match &event {
         SecurityEvent::FileViolation {
@@ -373,5 +479,77 @@ async fn handle_event(
         SecurityEvent::SystemError { message, .. } => {
             error!(message = %message, "system error from guard");
         }
+        SecurityEvent::AgentDetected {
+            pid,
+            agent_name,
+            cwd,
+            mode,
+            ..
+        } => {
+            info!(
+                pid,
+                agent = %agent_name,
+                cwd = %cwd.display(),
+                mode = %mode,
+                "AI agent detected in protected directory"
+            );
+            if alerts_enabled && mode != "monitor" {
+                send_desktop_notification(
+                    &format!("AgentGuard: {agent_name} detected"),
+                    &format!("'{agent_name}' (pid {pid}) was detected in a protected directory and will be sandboxed"),
+                );
+            }
+        }
+        SecurityEvent::AgentSandboxed {
+            original_pid,
+            sandbox_pid,
+            agent_name,
+            cwd,
+            timestamp,
+        } => {
+            info!(
+                original_pid,
+                sandbox_pid,
+                agent = %agent_name,
+                cwd = %cwd.display(),
+                "agent sandboxed successfully"
+            );
+
+            // Añadir a la lista de sandboxes activos
+            if let Ok(mut sandboxes) = active_sandboxes.write() {
+                sandboxes.push(SandboxedAgent {
+                    original_pid: *original_pid,
+                    sandbox_pid: *sandbox_pid,
+                    agent_name: agent_name.clone(),
+                    cwd: cwd.display().to_string(),
+                    mode: agentguard_common::SandboxMode::Sandbox,
+                    started_at: *timestamp,
+                });
+                // Limpiar sandboxes cuyos procesos ya murieron
+                sandboxes.retain(|s| {
+                    unsafe { libc::kill(s.sandbox_pid as i32, 0) == 0 }
+                });
+            }
+
+            if alerts_enabled {
+                send_desktop_notification(
+                    &format!("AgentGuard: {agent_name} sandboxed"),
+                    &format!("'{agent_name}' is now running in a sandbox inside {:?}", cwd),
+                );
+            }
+        }
+    }
+}
+
+fn send_desktop_notification(summary: &str, body: &str) {
+    let result = notify_rust::Notification::new()
+        .summary(summary)
+        .body(body)
+        .appname("AgentGuard")
+        .timeout(notify_rust::Timeout::Milliseconds(5000))
+        .show();
+    match result {
+        Ok(_) => tracing::debug!(summary, "desktop notification sent"),
+        Err(e) => tracing::warn!(error = %e, "failed to send desktop notification"),
     }
 }

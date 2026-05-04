@@ -420,6 +420,7 @@ impl<R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWr
     fn is_write_vectored(&self) -> bool { self.inner.is_write_vectored() }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn direct_connect_mitm(
     stream: TcpStream,
     host: String,

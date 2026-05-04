@@ -1,0 +1,27 @@
+[package]
+name = "agentguard-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license = "BUSL-1.1"
+description = "AgentGuard Terminal UI — ratatui + crossterm dashboard"
+repository.workspace = true
+
+[[bin]]
+name = "agentguard-tui"
+path = "src/main.rs"
+
+[dependencies]
+agentguard-common = { path = "../agentguard-common" }
+
+ratatui = "0.29"
+crossterm = "0.28"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "io-util", "net", "time"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
+dirs = { workspace = true }

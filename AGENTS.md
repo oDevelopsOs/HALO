@@ -102,15 +102,14 @@ crates/
 ├── agentguard-windows/      Binario Windows (Fase 4)
 ├── agentguard-macos/        Binario macOS (Fase 5)
 ├── agentguard-ebpf/         Programas eBPF kernel (compilación separada, nightly)
+├── agentguard-tui/         TUI terminal (ratatui + crossterm)
 ├── agentguard-cli/          CLI cross-platform (único binario para todos)
-├── agentguard-installer/    Bootstrap installer (detecta SO, descarga, instala)
-└── agentguard-ui/           Tauri UI (Fase 6 — opcional, terminal-first)
 ```
 
 ### 3.2 Dónde va cada cosa
 
 | Tipo de código | Crate destino |
-|---|---|
+|---|---|---|
 | Tipos FFI (no_std) | `agentguard-common` |
 | Config, Vault, DLP, CA, IPC, eventos, guard trait | `agentguard-core` |
 | eBPF loader (aya), userspace notify | `agentguard-linux` |
@@ -118,7 +117,7 @@ crates/
 | EndpointSecurity, chflags | `agentguard-macos` |
 | Comandos CLI, output formateado | `agentguard-cli` |
 | Scripts de instalación | `agentguard-installer` |
-| Dashboard, Zones, Incidents UI | `agentguard-ui` |
+| Dashboard, Zones, Incidents UI | `agentguard-tui` |
 
 ### 3.3 Imports correctos
 
@@ -139,7 +138,7 @@ use agentguard_common::{IpcCommand, IpcResponse, PathPrefix};
 
 - `agentguard-linux` usa `#[cfg(feature = "ebpf")]` para aya
 - Sin `--features ebpf`, el daemon Linux compila con solo userspace fallback
-- `agentguard-windows` y `agentguard-macos` están en el workspace pero comentados
+- `agentguard-windows` y `agentguard-macos` están en el workspace
   hasta que se implementen (Fases 4-5)
 
 ---
@@ -180,10 +179,13 @@ cargo test --workspace --exclude agentguard-ebpf
 | Crate | Tests | Estado |
 |---|---|---|
 | `agentguard-common` | 3 | OK |
-| `agentguard-core` | 54 (51 unit + 3 integración + 2 E2E ignorados) | OK |
-| `agentguard-linux` | 3 | OK |
-| `agentguard-ui` | 1 | OK |
-| **Total** | **60** | **0 fallos** |
+| `agentguard-core` | 62 (60 unit + 2 E2E ignorados) | OK |
+| `agentguard-linux` | 18 (15 unit + 3 integración) | OK |
+| `agentguard-tui` | 0 | OK |
+| `agentguard-cli` | 11 | OK |
+| `agentguard-windows` | 7 | OK |
+| `agentguard-macos` | 4 | OK |
+| **Total** | **106** | **0 fallos** |
 
 ---
 
@@ -238,5 +240,5 @@ cargo build -p agentguard-linux --features ebpf
 
 ---
 
-> **Última actualización:** 2026-05-02 — Fase 2 completada. 60 tests, 0 warnings, 0 unwrap.
+> **Última actualización:** 2026-05-04 — Fase 2.5: hardening completo. 12 hooks eBPF, 84 tests, 0 warnings.
 > **Backup más reciente:** `backup/pre-fase0`

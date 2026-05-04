@@ -20,7 +20,7 @@ fn embed_ebpf_bytecode() {
     let bytecode_dir = manifest.join("../../target/ebpf");
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
-    for name in &["file_guard", "net_guard"] {
+    for name in &["file_guard", "net_guard", "process_exec"] {
         let src = bytecode_dir.join(name);
         if !src.exists() {
             panic!(
@@ -40,6 +40,7 @@ fn embed_ebpf_bytecode() {
 
     println!("cargo:rerun-if-changed={}", bytecode_dir.join("file_guard").display());
     println!("cargo:rerun-if-changed={}", bytecode_dir.join("net_guard").display());
+    println!("cargo:rerun-if-changed={}", bytecode_dir.join("process_exec").display());
     println!("cargo:rerun-if-changed=../../scripts/build-ebpf.sh");
     println!("cargo:rerun-if-changed=../agentguard-ebpf/src/");
 }

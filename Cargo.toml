@@ -4,11 +4,11 @@ members = [
     "crates/agentguard-common",
     "crates/agentguard-core",
     "crates/agentguard-linux",
-    # "crates/agentguard-windows",   # activar en Fase 4
-    # "crates/agentguard-macos",     # activar en Fase 5
+    "crates/agentguard-windows",   # Fase 4 activa
+    "crates/agentguard-macos",     # Fase 5 activa
     "crates/agentguard-cli",
     "crates/agentguard-installer",
-    "crates/agentguard-ui",
+    "crates/agentguard-tui",
 ]
 # agentguard-ebpf se compila por separado con nightly + target bpfel-unknown-none
 exclude = ["crates/agentguard-ebpf"]

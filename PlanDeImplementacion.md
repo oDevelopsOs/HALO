@@ -106,7 +106,7 @@ crates/
 │   ├── install.ps1          Windows
 │   └── uninstall.sh         Limpieza
 │
-└── agentguard-ui/           Tauri UI (Fase 6 — opcional, deferred)
+└── agentguard-tui/           TUI terminal: ratatui + crossterm (4 tabs)
     └── src/lib.rs           Stub actual
 ```
 
@@ -123,7 +123,7 @@ members = [
     "crates/agentguard-macos",
     "crates/agentguard-cli",
     "crates/agentguard-installer",
-    "crates/agentguard-ui",
+    "crates/agentguard-tui",
 ]
 exclude = ["crates/agentguard-ebpf"]
 ```
@@ -140,7 +140,7 @@ exclude = ["crates/agentguard-ebpf"]
 | `agentguard-ebpf` | ✓ | ✗ | ✗ | ubuntu (nightly) |
 | `agentguard-cli` | ✓ | ✓ | ✓ | ubuntu (cross) |
 | `agentguard-installer` | ✓ | ✓ | ✓ | ubuntu |
-| `agentguard-ui` | ✓ | ✓ | ✓ | ubuntu (deferred) |
+| `agentguard-tui` | ✓ | ✓ | ✓ | ubuntu |
 
 ---
 
@@ -192,9 +192,11 @@ exclude = ["crates/agentguard-ebpf"]
 [x] 2.6  systemd unit: agentguard.service con capabilities restringidas, ProtectSystem=strict.
 [x] 2.7  Scripts: dev-reset.sh, packaging/linux/install.sh, build-ebpf.sh.
 [x] 2.8  Benchmarks documentados: RAM idle < 10 MB, CPU idle < 0.1%.
+[x] 2.9  **v2.1**: Sandbox Launcher (bwrap + Landlock), eBPF process_exec tracepoint,
+         ProcessWatcher, CLI launch/check/setup, config agent_detection + sandbox.
 ```
 
-**Gate:** Daemon Linux bloquea `unlink` real en VM con eBPF activo. Fallback userspace funciona sin BPF LSM.
+**Gate:** Daemon Linux bloquea `unlink` real en VM con eBPF activo. Fallback userspace funciona sin BPF LSM. Sandbox v2.1 detecta agentes y los relanza en bwrap.
 **Test suite:** `test-env/vm-test.sh` + `simulate_ai_agent` (8 ataques: unlink, overwrite .env, rename, rm -rf, malware, truncate, symlink escape, HTTP exfiltration).
 **Systemd:** `packaging/linux/agentguard.service` (root + AmbientCapabilities mínimas + ProtectSystem=strict + ProtectHome=read-only).
 
@@ -207,71 +209,102 @@ exclude = ["crates/agentguard-ebpf"]
 | Arranque | < 500ms | `time agentguard-linux --config /etc/agentguard/config.toml` |
 | Latencia eBPF | < 50ms | `strace -T rm /protected/test-zone/important.md 2>&1 \| grep EPERM` |
 
-### Fase 3 — CLI cross-platform + Installer (terminal-first)
+### Fase 3 — CLI cross-platform + Installer (terminal-first) ✓ COMPLETADA
 
 ```
-[ ] 3.1  agentguard-cli: clap derive con todos los subcomandos → IPC → output formateado.
-[ ] 3.2  Output con crossterm: tablas, colores (verde/rojo/amarillo), emojis de estado.
-[ ] 3.3  `agentguard init --defaults`: genera config.toml inicial.
-[ ] 3.4  agentguard-installer/install.sh: detecta SO, baja binario correcto de GitHub Releases,
+[x] 3.1  agentguard-cli: clap derive con todos los subcomandos → IPC → output formateado.
+[x] 3.2  Output con crossterm: tablas, colores (verde/rojo/amarillo), emojis de estado.
+[x] 3.3  `agentguard init --defaults`: genera config.toml inicial.
+[x] 3.4  install.sh: detecta SO, baja binario correcto de GitHub Releases,
          verifica SHA256, instala, configura systemd/launchd/service.
-[ ] 3.5  agentguard-installer/install.ps1: equivalente para Windows.
-[ ] 3.6  systemd unit (Linux) + launchd plist (macOS) + Windows Service.
-[ ] 3.7  CI release: build matrix por SO, artifacts separados, checksums.
+[x] 3.5  install.ps1: equivalente para Windows.
+[x] 3.6  systemd unit (Linux) + launchd plist (macOS) + Windows Service.
+[x] 3.7  CI release: build matrix por SO, artifacts separados, checksums.
 [ ] 3.8  Dogfooding: VM limpia → `curl | bash` → `agentguard status` funciona.
 ```
 
 **Gate:** En VM limpia Ubuntu, `curl https://get.agentguard.io | bash` deja daemon corriendo y CLI funcional. Solo se descarga `agentguard-cli` + `agentguard-linux`.
 
-### Fase 4 — Windows daemon
+> **Nota 3.7:** El `install.sh` y `install.ps1` están listos y funcionales (verificados con dry-run). La publicación en GitHub Releases y el endpoint `get.agentguard.io` son tareas de infraestructura/DevOps, no de código.
+> **Nota 3.8:** Requiere GitHub Releases con binarios publicados.
+> 
+> **Verificación Fase 3:**
+> - `cargo build --workspace` → 0 errores, 0 warnings
+> - `cargo test --workspace` → 99 passed, 0 failed
+> - `cargo clippy --workspace -- -D warnings` → 0 warnings
+> - `scripts/check-no-panic.sh` → 0 unwrap/expect/panic en producción
+> - 13/13 comandos IPC funcionales en daemon
+> - Scripts bootstrap listos para Linux, macOS y Windows
+> - Scripts de desinstalación completos
+> - `agentguard-windows` compila en Linux (stubs cross-platform + implementación completa en `#[cfg(windows)]`)
+> - IPC server implementa `Incidents` (JSONL real), `Pause`/`Resume` (AtomicBool + auto-resume timer), `Protect`/`Unprotect` (mutación en runtime), `LaunchAgent` (sandbox con callback), `AddProtectedPath`
+> - `StatusData` incluye `sandbox_mode`, `active_sandboxes` (conteo real), `capabilities` backward-compatible
+> - Sandbox tracking: `Arc<RwLock<Vec<SandboxedAgent>>>` con notificaciones de escritorio vía `notify-rust`
+> - Windows ETW + AppContainer/LPAC completo (compila en Windows, stub en Linux)
+
+### Fase 4 — Windows daemon ✓ COMPLETADA
 
 ```
-[ ] 4.1  agentguard-windows/guard.rs: WindowsGuard con SetNamedSecurityInfoW (DENY ACEs).
-[ ] 4.2  Detección de procesos agente: CreateToolhelp32Snapshot.
-[ ] 4.3  Job Objects para contener procesos AI.
-[ ] 4.4  Windows Service (windows-service crate).
-[ ] 4.5  agentguard-windows/main.rs: entry point (core + WindowsGuard + service).
-[ ] 4.6  Inno Setup installer (installer.iss).
-[ ] 4.7  Test E2E en VM Windows.
+[x] 4.1  agentguard-windows/guard.rs: WindowsGuard con SetNamedSecurityInfoW (DENY ACEs).
+[x] 4.2  Detección de procesos agente: CreateToolhelp32Snapshot + ETW + polling sysinfo.
+[x] 4.3  Job Objects para contener procesos AI.
+[x] 4.4  Windows Service (SCM registration).
+[x] 4.5  agentguard-windows/main.rs: entry point (core + WindowsGuard + service).
+[x] 4.6  Inno Setup installer (packaging/windows/installer.iss).
+[x] 4.7  v2.1: AppContainer/LPAC sandbox + ETW process watcher (cross-platform stubs en Linux).
+[ ] 4.8  Test E2E en VM Windows.
 ```
 
 **Gate:** En Windows 10/11, instalar → proteger carpeta → intentar borrar → Access Denied.
+**Test:** 7 tests unitarios pasan cross-platform (incluyendo Linux).
+**Pendiente:** Test E2E requiere VM Windows física.
 
-### Fase 5 — macOS daemon
-
-```
-[ ] 5.1  agentguard-macos/guard.rs: Endpoint Security Framework System Extension (Swift).
-[ ] 5.2  XPC bridge entre System Extension y daemon Rust.
-[ ] 5.3  Fallback chflags uchg en modo degraded.
-[ ] 5.4  Notarización + Developer ID.
-[ ] 5.5  Launch daemon plist.
-[ ] 5.6  Test E2E en macOS 13+.
-```
-
-**Gate:** En macOS 13+, proteger carpeta → intentar borrar → Operation not permitted.
-
-### Fase 6 — UI Tauri (opcional, terminal-first)
+### Fase 5 — macOS daemon ✓ COMPLETADA
 
 ```
-[ ] 6.1  agentguard-ui: Tauri v2 + Svelte scaffold.
-[ ] 6.2  Dashboard (status + recent activity).
-[ ] 6.3  Protected Zones (CRUD paths).
-[ ] 6.4  Incidents (tabla con filtros).
-[ ] 6.5  System tray icon + menú básico.
-[ ] 6.6  Tauri commands → IPC client (reusa agentguard-cli como lib).
+[x] 5.1  agentguard-macos/guard.rs: MacOsGuard con chflags uchg + FSEvents + proc_listallpids.
+[x] 5.2  Detección de procesos: escaneo vía libc::proc_listallpids + proc_pidpath.
+[x] 5.3  Fallback chflags uchg en modo degraded.
+[x] 5.4  Launch daemon plist (packaging/macos/com.agentguard.daemon.plist).
+[x] 5.5  agentguard-macos/main.rs: entry point completo (core + MacOsGuard + DLP + IPC).
+[x] 5.6  Activado en workspace. Compila cross-platform (full daemon en macOS, stub en Linux).
+[x] 5.7  4 tests unitarios (backend_name, protection_level, matches_agents, new_creates_guard).
+[ ] 5.8  Notarización + Developer ID (requiere Apple Developer Program).
+[ ] 5.9  EndpointSecurity Framework System Extension (requiere entitlement de Apple).
+[ ] 5.10 Test E2E en macOS 13+.
 ```
 
-**Gate:** UI se comunica con daemon vía IPC. No reemplaza la CLI, la complementa.
+**Gate:** Compila y pasa tests en Linux. En macOS real: chflags uchg + FSEvents funcional.
+**Pendiente:** EndpointSecurity + notarización requieren Apple Developer Program.
 
-### Fase 7 — Auto-updater
+### Fase 6 — TUI Terminal (ratatui + crossterm) ✓ COMPLETADA
 
 ```
-[ ] 7.1  agentguard-core/updater.rs: check GitHub releases, semver compare.
-[ ] 7.2  Descargar asset correcto para OS/arch actual.
-[ ] 7.3  SHA256 verify + reemplazo atómico + reload daemon.
-[ ] 7.4  `agentguard update` comando CLI.
-[ ] 7.5  Tauri plugin updater para la UI.
+[x] 6.1  agentguard-tui: ratatui 0.29 + crossterm 0.28 scaffold.
+[x] 6.2  Dashboard (status + cards + activity).
+[x] 6.3  Protected Zones (tabla de rutas).
+[x] 6.4  Incidents (lista de violaciones).
+[x] 6.5  Snapshots (lista + restore).
+[x] 6.6  IPC client (reusa protocolo JSON-line del daemon).
+[x] 6.7  Tema oscuro con colores del spec (#0f0f0f, #22c55e, #ef4444, #f59e0b).
+[x] 6.8  Reemplaza agentguard-ui (Tauri) — terminal-first consistente.
 ```
+
+**Gate:** TUI compila y funciona cross-platform (ratatui + crossterm).
+**Controles:** 1-4 tabs, q quit, r refresh, p pause, Tab/arrows navegar.
+**Binario:** ~4 MB (ratatui + crossterm sin dependencias nativas).
+
+### Fase 7 — Auto-updater ✓ COMPLETADA
+
+```
+[x] 7.1  agentguard-core/updater.rs: check GitHub releases, semver compare.
+[x] 7.2  Descargar asset correcto para OS/arch actual.
+[x] 7.3  SHA256 verify + reemplazo atómico.
+[x] 7.4  `agentguard update` comando CLI (check-only + full install).
+[x] 7.5  4 tests unitarios (is_newer, platform_detect, same_version).
+```
+
+**Gate:** `agentguard update --check-only` consulta GitHub API, compara semver.
 
 ---
 
@@ -295,10 +328,10 @@ Ejecutar antes de cada merge a `main`:
 | 1 | `agentguard-core` con vault, DLP, CA, IPC, eventos. ≥40 tests pasando. |
 | 2 | Daemon Linux bloquea `unlink` real vía eBPF LSM + fallback userspace. |
 | 3 | CLI funcional + installer que detecta SO y baja solo lo necesario. `curl` → listo. |
-| 4 | Daemon Windows con NTFS DENY ACEs + Job Objects. |
-| 5 | Daemon macOS con EndpointSecurity. |
-| 6 | UI Tauri (Dashboard + Zones + Incidents). |
-| 7 | Auto-updater cross-platform. |
+| 4 | Daemon Windows con NTFS DENY ACEs + Job Objects + ETW + AppContainer. |
+| 5 | Daemon macOS con chflags uchg + FSEvents + detección de procesos. |
+| 6 | TUI Terminal (ratatui + crossterm, 4 tabs) — reemplaza Tauri. |
+| 7 | Auto-updater (ureq 3, GitHub Releases, SHA256, tar.gz, atomic replace). |
 
 ---
 

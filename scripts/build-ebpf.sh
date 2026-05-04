@@ -30,10 +30,11 @@ if ! rustup run nightly cargo --version &>/dev/null; then
     exit 1
 fi
 
-# Verificar el target BPF
-if ! rustup +nightly target list --installed | grep -q bpfel-unknown-none; then
-    echo "ERROR: bpfel-unknown-none target not installed. Install with:"
-    echo "  rustup +nightly target add bpfel-unknown-none"
+# bpfel-unknown-none no tiene binarios precompilados.
+# Se compila desde source con -Z build-std=core (requiere rust-src).
+if ! rustup +nightly component list --installed | grep -q rust-src; then
+    echo "ERROR: rust-src component not installed. Install with:"
+    echo "  rustup +nightly component add rust-src"
     exit 1
 fi
 
@@ -42,15 +43,17 @@ mkdir -p "$OUT_DIR"
 (
     cd "$EBPF_CRATE"
 
-    # Compilar file_guard
+    # Compilar file_guard y net_guard
     echo "  → file_guard..."
     cargo +nightly build --release \
         --target bpfel-unknown-none \
         -Z build-std=core
 
-    # Copiar binarios sin extensión para que el build.rs del daemon los encuentre
-    cp -f target/bpfel-unknown-none/release/file_guard "$OUT_DIR/file_guard"
-    cp -f target/bpfel-unknown-none/release/net_guard  "$OUT_DIR/net_guard"
+    # Los binarios quedan en <workspace>/target/ebpf-target/bpfel-unknown-none/release/
+    # (configurado en crates/agentguard-ebpf/.cargo/config.toml)
+    BIN_DIR="$PROJECT_ROOT/target/ebpf-target/bpfel-unknown-none/release"
+    cp -f "$BIN_DIR/file_guard" "$OUT_DIR/file_guard"
+    cp -f "$BIN_DIR/net_guard"  "$OUT_DIR/net_guard"
 )
 
 echo "=== Done: $OUT_DIR/file_guard, $OUT_DIR/net_guard ==="

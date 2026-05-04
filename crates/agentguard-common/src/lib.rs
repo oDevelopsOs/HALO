@@ -101,6 +101,11 @@ impl PathPrefix {
     }
 }
 
+// `PathPrefix` es #[repr(C)], Copy y solo contiene enteros y arrays.
+// Es seguro declararlo como Pod para el ecosistema aya (usado en maps BPF).
+#[cfg(feature = "ebpf-aya")]
+unsafe impl aya::Pod for PathPrefix {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,6 +134,54 @@ mod tests {
     }
 }
 
+// ─── Detección de agentes IA ────────────────────────────────────────────────
+
+/// Evento de spawn de agente IA. Viaja del eBPF tracepoint al daemon userspace
+/// vía ring buffer. Layout FFI: debe ser no_std + repr(C).
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct AgentSpawnEvent {
+    pub pid: u32,
+    pub ppid: u32,
+    pub uid: u32,
+    /// Nombre del ejecutable (comm del kernel), máx 16 bytes.
+    pub comm: [u8; 16],
+    /// Ruta completa del ejecutable, máx 256 bytes.
+    pub exe_path: [u8; 256],
+    /// Directorio de trabajo actual, máx 256 bytes.
+    pub cwd: [u8; 256],
+    /// argv[0..N] concatenado con \0, máx 128 bytes.
+    pub argv: [u8; 128],
+}
+
+// Safety: AgentSpawnEvent es repr(C), Copy, solo contiene arrays de enteros.
+// Es seguro marcarlo como Pod para aya en userspace.
+#[cfg(feature = "ebpf-aya")]
+unsafe impl aya::Pod for AgentSpawnEvent {}
+
+impl AgentSpawnEvent {
+    /// Decodifica `comm` como &str.
+    #[cfg(not(target_arch = "bpf"))]
+    pub fn comm_str(&self) -> &str {
+        let end = self.comm.iter().position(|&b| b == 0).unwrap_or(16);
+        core::str::from_utf8(&self.comm[..end]).unwrap_or("<invalid>")
+    }
+
+    /// Decodifica `cwd` como &str.
+    #[cfg(not(target_arch = "bpf"))]
+    pub fn cwd_str(&self) -> &str {
+        let end = self.cwd.iter().position(|&b| b == 0).unwrap_or(256);
+        core::str::from_utf8(&self.cwd[..end]).unwrap_or("<invalid>")
+    }
+
+    /// Decodifica `exe_path` como &str.
+    #[cfg(not(target_arch = "bpf"))]
+    pub fn exe_str(&self) -> &str {
+        let end = self.exe_path.iter().position(|&b| b == 0).unwrap_or(256);
+        core::str::from_utf8(&self.exe_path[..end]).unwrap_or("<invalid>")
+    }
+}
+
 // ------------------------------------------------------------------
 // Tipos del protocolo IPC (solo userspace — feature "std").
 // ------------------------------------------------------------------
@@ -136,6 +189,25 @@ mod tests {
 #[cfg(feature = "std")]
 mod ipc {
     use serde::{Deserialize, Serialize};
+
+    #[doc = "Modo de sandbox para agentes IA."]
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+    #[serde(rename_all = "lowercase")]
+    pub enum SandboxMode {
+        Monitor,
+        Sandbox,
+        Hybrid,
+    }
+
+    impl std::fmt::Display for SandboxMode {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::Monitor => write!(f, "monitor"),
+                Self::Sandbox => write!(f, "sandbox"),
+                Self::Hybrid => write!(f, "hybrid"),
+            }
+        }
+    }
 
     #[doc = "Comando enviado del CLI/UI al daemon vía IPC."]
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -167,13 +239,24 @@ mod ipc {
         /// Limpiar snapshots antiguos.
         SnapshotCleanup { keep_days: u64 },
         /// Mostrar incidentes recientes.
-        Incidents { last: usize },
+        Incidents { last: Option<usize> },
         /// Pausar protección.
         Pause { minutes: u64 },
         /// Reanudar protección.
         Resume,
         /// Ping (health-check).
         Ping,
+        /// Lanzar un agente IA dentro del sandbox (v2.1).
+        LaunchAgent {
+            exe: std::string::String,
+            cwd: std::string::String,
+            #[serde(default)]
+            extra_args: std::vec::Vec<std::string::String>,
+            #[serde(default)]
+            mode_override: Option<std::string::String>,
+        },
+        /// Añadir ruta protegida en runtime (v2.1).
+        AddProtectedPath { path: std::string::String },
     }
 
     fn default_label() -> std::string::String {
@@ -199,8 +282,21 @@ mod ipc {
             guard_backend: std::string::String,
             protection_level: std::string::String,
             dlp_enabled: bool,
+            paused: bool,
             protected_dirs: std::vec::Vec<std::string::String>,
             protected_files: std::vec::Vec<std::string::String>,
+            /// v2.1: modo de sandbox activo.
+            #[serde(default)]
+            sandbox_mode: Option<std::string::String>,
+            /// v2.1: número de sandboxes activos.
+            #[serde(default)]
+            active_sandboxes: u32,
+            /// v2.1: capacidades del sistema.
+            #[serde(default)]
+            capabilities: Option<std::string::String>,
+            /// v2.1: contador de incidentes recientes.
+            #[serde(default)]
+            incidents_count: u64,
         },
         /// Respuesta a SnapshotList.
         SnapshotList {
@@ -212,6 +308,10 @@ mod ipc {
         },
         /// Respuesta a Ping.
         Pong,
+        /// v2.1: agente lanzado en sandbox.
+        AgentLaunched {
+            sandbox_pid: u32,
+        },
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -222,7 +322,18 @@ mod ipc {
         pub files: usize,
         pub total_size: u64,
     }
+
+    /// v2.1: Estado de un agente actualmente sandboxeado.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct SandboxedAgent {
+        pub original_pid: u32,
+        pub sandbox_pid: u32,
+        pub agent_name: std::string::String,
+        pub cwd: std::string::String,
+        pub mode: SandboxMode,
+        pub started_at: u64,
+    }
 }
 
 #[cfg(feature = "std")]
-pub use ipc::{IpcCommand, IpcResponse, SnapshotInfo};
+pub use ipc::{IpcCommand, IpcResponse, SandboxMode, SandboxedAgent, SnapshotInfo};

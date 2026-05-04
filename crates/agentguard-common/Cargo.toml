@@ -17,7 +17,10 @@ name = "agentguard_common"
 default = ["std"]
 # `std` habilita tipos que no funcionan en no_std (Strings, IpcCommand con Vec, etc.)
 std = ["serde/std", "thiserror"]
+# Habilita integración con aya (impl Pod para PathPrefix, etc.)
+ebpf-aya = ["aya"]
 
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true, optional = true }
+aya = { version = "0.13", optional = true }

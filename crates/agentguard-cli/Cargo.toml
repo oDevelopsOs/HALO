@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 agentguard-common = { path = "../agentguard-common" }
+agentguard-core = { path = "../agentguard-core" }
 
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "net"] }
 clap = { workspace = true }

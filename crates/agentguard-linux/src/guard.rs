@@ -3,6 +3,8 @@
 
 pub mod userspace;
 
+pub mod agents;
+
 #[cfg(feature = "ebpf")]
 pub mod ebpf;
 

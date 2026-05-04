@@ -6,6 +6,43 @@ versionado [SemVer](https://semver.org/lang/es/).
 
 ## [Unreleased]
 
+### Added — v2.1 Módulo 10: Sandbox Launcher + Detección Automática de Agentes IA
+
+**Core types:**
+- `agentguard-common`: `AgentSpawnEvent` (repr(C), no_std), `SandboxMode` enum, `SandboxedAgent` struct, `IpcCommand::LaunchAgent`/`AddProtectedPath`, `IpcResponse::AgentLaunched`, `StatusData` ampliado.
+- `agentguard-core::events`: `SecurityEvent::AgentDetected` y `SecurityEvent::AgentSandboxed`.
+- `agentguard-core::config`: `SandboxConfig`, `AgentDetection` + `KnownAgent`, `WindowsConfig`.
+
+**IPC & tracking:**
+- `agentguard-core::ipc_server`: `LaunchAgent` handler con callback inyectable, `AddProtectedPath` handler, builder con `launch_agent_fn()`, `active_sandboxes()`, `incidents_count()`. Contadores reales en `StatusData`.
+
+**eBPF (kernel):**
+- `agentguard-ebpf`: programa `process_exec` — tracepoint `sched_process_exec` con mapa `KNOWN_AGENTS` (hash FNV-1a) y ring buffer.
+
+**Linux daemon:**
+- `agentguard-linux::sandbox`: Bubblewrap sandbox launcher, namespaces, DLP proxy injection, `check_capabilities()`, degradación automática. 4 tests.
+- `agentguard-linux::landlock`: Perfil Landlock ABI V3 (modo hybrid).
+- `agentguard-linux::process_watcher`: Carga eBPF + loop ring buffer + lógica sandbox/monitor. 2 tests.
+- `agentguard-linux::main`: Sandbox capabilities check, ProcessWatcher startup, desktop notifications (notify-rust), sandbox tracking, incident counter.
+
+**Windows daemon (completo, compila en Linux como stub):**
+- `agentguard-windows::process_watcher`: ETW consumer (`sched_process_exec` vía `StartTraceW`/`OpenTraceW`/`ProcessTrace`) + polling fallback (`sysinfo`).
+- `agentguard-windows::sandbox`: AppContainer/LPAC sandbox (`CreateAppContainerProfile` + `CreateProcessW` con `SECURITY_CAPABILITIES` + DENY ACEs vía `SetNamedSecurityInfoW`).
+
+**CLI:**
+- Comandos `launch` (lanza agente en sandbox), `check` (verifica capacidades), `setup` (configuración interactiva).
+- Config default actualizado con secciones v2.1.
+
+**Tests:**
+- 3 nuevos tests de integración en `agentguard-linux/tests/sandbox_integration.rs`.
+- 99 tests totales (0 fallos).
+
+**Verification:**
+- `cargo build --workspace` → 0 errores, 0 warnings
+- `cargo test --workspace` → 99 passed, 0 failed
+- `cargo clippy --workspace -- -D warnings` → 0 warnings
+- `scripts/check-no-panic.sh` → 0 unwrap/expect/panic
+
 ### Added — Fase 0 (bootstrap)
 - Workspace Cargo con crates `agentguard-common`, `agentguard-daemon`, `agentguard-cli`, `agentguard-ebpf`, `agentguard-ui`.
 - Reglas Windsurf en `.windsurf/rules/` (estilo Rust, no-unwrap, eBPF safety, security logging, testing, IPC contract, paths/privileges).
@@ -81,5 +118,32 @@ Verificado E2E: `curl -x http://127.0.0.1:7771 -d 'sk-...' http://dest/` → `HT
 
 ### Pending
 - 2.7: detección de procesos agente (match por exe/argv/env).
-- Fase 3+: packaging systemd, releases, UI Tauri.
 - eBPF kernel testing (requiere VM con BPF LSM).
+
+### Added — Fase 3 (CLI cross-platform + Installer)
+
+- `agentguard-core::ipc_server`: Comandos `Incidents` (lectura real de JSONL), `Pause`/`Resume` (flag atómico con auto-resume timer), `Protect`/`Unprotect` (mutan config en runtime vía `RwLock<Config>`). Builder pattern con `.incidents_log()` y `.paused()`. Cero `.unwrap()` en producción.
+- `agentguard-cli`: Output muestra estado `paused` (⏸ PAUSED). Fix mapping de `Incidents.last` a `Option<usize>`. Función `yellow()` renombrada (sin underscore).
+- `IpcResponse::StatusData`: Nuevo campo `paused: bool` (backward-compatible con `#[serde(default)]`).
+- `agentguard-linux/src/main.rs`: IPC server con builder + incidents log + paused flag. Event loop respeta pausa (loguea incidentes pero no reacciona).
+- `agentguard-windows/src/main.rs`: Igual que Linux. Corrección de `.expect()` por manejo explícito de error en `Runtime::new()`.
+- `agentguard-windows/src/guard.rs`: Compilación cross-platform (stubs en Linux con `#[cfg(windows)]`). Lectura de PEB para command line de otro proceso. Matching por `argv_contains_any`. Job Objects uno por proceso. 7 tests.
+- `packaging/install.sh`: Bootstrap Linux/macOS — detecta SO/arch, descarga binarios de GitHub Releases, verifica SHA-256, instala systemd/launchd, genera config, añade CA al trust store.
+- `packaging/install.ps1`: Bootstrap Windows — detecta arch, descarga binarios, verifica SHA-256, registra Windows Service, genera config.
+- `packaging/uninstall.sh` + `packaging/uninstall.ps1`: Scripts de desinstalación completa (binarios, servicio, CA, datos).
+- `packaging/macos/com.agentguard.daemon.plist`: LaunchDaemon plist para macOS.
+- `packaging/windows/`: Directorio preparado para Inno Setup installer (Fase 4.6).
+
+### Fixed
+- `agentguard-core::config`: Clippy `derivable_impls` — `#[derive(Default)]` reemplaza `impl Default for Config` manual.
+- `agentguard-core::vault`: Clippy `unnecessary_sort_by` → `sort_by_key`.
+- `agentguard-core::ipc_server`: Clippy `io_other_error` → `std::io::Error::other`.
+- `agentguard-core::dlp::proxy`: Clippy `too_many_arguments` → `#[allow]`.
+- `agentguard-core::config::from_str`: Clippy `should_implement_trait` → `#[allow]`.
+- Prohibido `.unwrap()`/`.expect()` en producción: `ipc_server.rs` usa `read_config()`/`write_config()` con manejo de `PoisonError`. `main.rs` Windows maneja `Runtime::new()` sin expect.
+
+### Verificación
+- `cargo build --workspace` → 0 errores, 0 warnings
+- `cargo test --workspace` → 84 passed, 0 failed
+- `cargo clippy --workspace -- -D warnings` → 0 warnings
+- `scripts/check-no-panic.sh` → 0 unwrap/expect/panic en producción

@@ -42,6 +42,27 @@ pub enum SecurityEvent {
         #[serde(default = "current_timestamp")]
         timestamp: u64,
     },
+
+    /// v2.1: Agente IA detectado iniciándose en un directorio protegido.
+    AgentDetected {
+        pid: u32,
+        agent_name: String,
+        cwd: PathBuf,
+        #[serde(default)]
+        mode: String,
+        #[serde(default = "current_timestamp")]
+        timestamp: u64,
+    },
+
+    /// v2.1: Agente relanzado exitosamente dentro del sandbox.
+    AgentSandboxed {
+        original_pid: u32,
+        sandbox_pid: u32,
+        agent_name: String,
+        cwd: PathBuf,
+        #[serde(default = "current_timestamp")]
+        timestamp: u64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,7 +80,9 @@ impl SecurityEvent {
         match self {
             Self::FileViolation { timestamp, .. }
             | Self::DlpViolation { timestamp, .. }
-            | Self::SystemError { timestamp, .. } => *timestamp,
+            | Self::SystemError { timestamp, .. }
+            | Self::AgentDetected { timestamp, .. }
+            | Self::AgentSandboxed { timestamp, .. } => *timestamp,
         }
     }
 }
