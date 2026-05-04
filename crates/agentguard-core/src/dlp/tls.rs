@@ -113,19 +113,18 @@ impl LeafIssuer {
         dn.push(DnType::CommonName, host);
         params.distinguished_name = dn;
         params.not_before = time::OffsetDateTime::now_utc() - time::Duration::hours(1);
-        params.not_after = time::OffsetDateTime::now_utc() + time::Duration::days(LEAF_VALIDITY_DAYS);
+        params.not_after =
+            time::OffsetDateTime::now_utc() + time::Duration::days(LEAF_VALIDITY_DAYS);
 
-        let leaf_cert =
-            params
-                .signed_by(&leaf_key, &self.inner.issuer_cert, &self.inner.issuer_key)
-                .map_err(|source| TlsError::LeafBuild {
-                    host: host.to_string(),
-                    source,
-                })?;
+        let leaf_cert = params
+            .signed_by(&leaf_key, &self.inner.issuer_cert, &self.inner.issuer_key)
+            .map_err(|source| TlsError::LeafBuild {
+                host: host.to_string(),
+                source,
+            })?;
 
         let cert_der = CertificateDer::from(leaf_cert.der().to_vec());
-        let key_der =
-            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(leaf_key.serialize_der()));
+        let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(leaf_key.serialize_der()));
 
         let server_config = ServerConfig::builder()
             .with_no_client_auth()
@@ -155,11 +154,7 @@ impl LeafIssuer {
     }
 
     pub fn cache_len(&self) -> usize {
-        self.inner
-            .cache
-            .lock()
-            .map(|c| c.len())
-            .unwrap_or(0)
+        self.inner.cache.lock().map(|c| c.len()).unwrap_or(0)
     }
 }
 

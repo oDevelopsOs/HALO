@@ -94,8 +94,8 @@ impl LocalCa {
                 let cert_pem = read_file(&cert_path)?;
                 let key_pem = read_file(&key_path)?;
                 let key = KeyPair::from_pem(&key_pem).map_err(CaError::KeyParse)?;
-                let issuer_params = CertificateParams::from_ca_cert_pem(&cert_pem)
-                    .map_err(CaError::CertParse)?;
+                let issuer_params =
+                    CertificateParams::from_ca_cert_pem(&cert_pem).map_err(CaError::CertParse)?;
                 let cert = Arc::new(
                     issuer_params
                         .self_signed(&key)
@@ -169,12 +169,24 @@ impl LocalCa {
         })
     }
 
-    pub fn cert_pem(&self) -> &str { &self.cert_pem }
-    pub fn key_pem(&self) -> &str { &self.key_pem }
-    pub fn rcgen_cert(&self) -> Arc<Certificate> { Arc::clone(&self.cert) }
-    pub fn rcgen_key(&self) -> Arc<KeyPair> { Arc::clone(&self.key) }
-    pub fn dir(&self) -> &Path { &self.dir }
-    pub fn cert_path(&self) -> PathBuf { self.dir.join(CA_CERT_FILE) }
+    pub fn cert_pem(&self) -> &str {
+        &self.cert_pem
+    }
+    pub fn key_pem(&self) -> &str {
+        &self.key_pem
+    }
+    pub fn rcgen_cert(&self) -> Arc<Certificate> {
+        Arc::clone(&self.cert)
+    }
+    pub fn rcgen_key(&self) -> Arc<KeyPair> {
+        Arc::clone(&self.key)
+    }
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+    pub fn cert_path(&self) -> PathBuf {
+        self.dir.join(CA_CERT_FILE)
+    }
 }
 
 fn read_file(path: &Path) -> Result<String, CaError> {
@@ -234,7 +246,10 @@ mod tests {
 
         assert!(cert.contains("-----BEGIN CERTIFICATE-----"));
         assert!(cert.contains("-----END CERTIFICATE-----"));
-        assert!(key.contains("-----BEGIN PRIVATE KEY-----") || key.contains("-----BEGIN EC PRIVATE KEY-----"));
+        assert!(
+            key.contains("-----BEGIN PRIVATE KEY-----")
+                || key.contains("-----BEGIN EC PRIVATE KEY-----")
+        );
 
         assert_eq!(ca.cert_pem(), cert);
         assert_eq!(ca.key_pem(), key);
@@ -272,13 +287,25 @@ mod tests {
         let ca_dir = tmp.path().join("ca");
         let _ca = LocalCa::generate_and_persist(&ca_dir).expect("generate");
 
-        let key_mode = std::fs::metadata(ca_dir.join(CA_KEY_FILE)).expect("stat key").permissions().mode() & 0o777;
+        let key_mode = std::fs::metadata(ca_dir.join(CA_KEY_FILE))
+            .expect("stat key")
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(key_mode, 0o600, "private key must be 0600");
 
-        let cert_mode = std::fs::metadata(ca_dir.join(CA_CERT_FILE)).expect("stat cert").permissions().mode() & 0o777;
+        let cert_mode = std::fs::metadata(ca_dir.join(CA_CERT_FILE))
+            .expect("stat cert")
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(cert_mode, 0o644, "cert must be 0644");
 
-        let dir_mode = std::fs::metadata(&ca_dir).expect("stat dir").permissions().mode() & 0o777;
+        let dir_mode = std::fs::metadata(&ca_dir)
+            .expect("stat dir")
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(dir_mode, 0o700, "ca dir must be 0700");
     }
 
@@ -320,18 +347,14 @@ mod tests {
 
         let leaf_key = KeyPair::generate().expect("leaf key");
         let mut leaf_params = CertificateParams::new(vec!["127.0.0.1".into()]).expect("san");
-        leaf_params.distinguished_name.push(DnType::CommonName, "127.0.0.1");
-        leaf_params.not_before =
-            time::OffsetDateTime::now_utc() - time::Duration::hours(1);
-        leaf_params.not_after =
-            time::OffsetDateTime::now_utc() + time::Duration::days(1);
+        leaf_params
+            .distinguished_name
+            .push(DnType::CommonName, "127.0.0.1");
+        leaf_params.not_before = time::OffsetDateTime::now_utc() - time::Duration::hours(1);
+        leaf_params.not_after = time::OffsetDateTime::now_utc() + time::Duration::days(1);
 
         let _leaf_cert = leaf_params
-            .signed_by(
-                &leaf_key,
-                ca.rcgen_cert().as_ref(),
-                ca.rcgen_key().as_ref(),
-            )
+            .signed_by(&leaf_key, ca.rcgen_cert().as_ref(), ca.rcgen_key().as_ref())
             .expect("sign leaf — cert should verify against root");
     }
 }

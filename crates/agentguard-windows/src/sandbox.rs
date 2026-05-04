@@ -14,10 +14,10 @@
 mod windows_impl {
     use std::path::Path;
     use windows::Win32::Foundation::*;
-    use windows::Win32::Security::*;
     use windows::Win32::Security::Authorization::*;
-    use windows::Win32::System::Threading::*;
+    use windows::Win32::Security::*;
     use windows::Win32::Storage::FileSystem::*;
+    use windows::Win32::System::Threading::*;
 
     use agentguard_core::config::Config;
     use thiserror::Error;
@@ -56,9 +56,7 @@ mod windows_impl {
                 let display_name = format!("AgentGuard sandbox for {}\0", agent_exe)
                     .encode_utf16()
                     .collect::<Vec<u16>>();
-                let description = "Sandboxed AI agent\0"
-                    .encode_utf16()
-                    .collect::<Vec<u16>>();
+                let description = "Sandboxed AI agent\0".encode_utf16().collect::<Vec<u16>>();
 
                 let mut app_container_sid: PSID = PSID::default();
 
@@ -75,16 +73,12 @@ mod windows_impl {
                         windows::core::PCWSTR(container_name.as_ptr()),
                         &mut app_container_sid,
                     )
-                    .map_err(|e| {
-                        anyhow::anyhow!("Cannot get AppContainer SID: {:?}", e)
-                    })?;
+                    .map_err(|e| anyhow::anyhow!("Cannot get AppContainer SID: {:?}", e))?;
                 }
 
                 // 2. Aplicar DENY ACEs en rutas protegidas
                 for protected_dir in &self.config.protected_dirs {
-                    if let Err(e) =
-                        apply_deny_ace(protected_dir, app_container_sid)
-                    {
+                    if let Err(e) = apply_deny_ace(protected_dir, app_container_sid) {
                         tracing::warn!(
                             path = %protected_dir.display(),
                             error = %e,
@@ -111,14 +105,10 @@ mod windows_impl {
                 );
 
                 let mut attr_list_buf = vec![0u8; attr_list_size];
-                let attr_list = LPPROC_THREAD_ATTRIBUTE_LIST(
-                    attr_list_buf.as_mut_ptr() as *mut _,
-                );
+                let attr_list = LPPROC_THREAD_ATTRIBUTE_LIST(attr_list_buf.as_mut_ptr() as *mut _);
 
                 InitializeProcThreadAttributeList(attr_list, 1, 0, &mut attr_list_size)
-                    .map_err(|e| {
-                        anyhow::anyhow!("InitializeProcThreadAttributeList: {:?}", e)
-                    })?;
+                    .map_err(|e| anyhow::anyhow!("InitializeProcThreadAttributeList: {:?}", e))?;
 
                 UpdateProcThreadAttribute(
                     attr_list,
@@ -129,21 +119,17 @@ mod windows_impl {
                     None,
                     None,
                 )
-                .map_err(|e| {
-                    anyhow::anyhow!("UpdateProcThreadAttribute: {:?}", e)
-                })?;
+                .map_err(|e| anyhow::anyhow!("UpdateProcThreadAttribute: {:?}", e))?;
 
                 let mut startup_info = STARTUPINFOEXW::default();
-                startup_info.StartupInfo.cb =
-                    std::mem::size_of::<STARTUPINFOEXW>() as u32;
+                startup_info.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
                 startup_info.lpAttributeList = attr_list;
 
                 // 5. Variables de entorno con el proxy DLP
                 let env_block = build_env_block(&self.config);
 
                 // 6. Comando a ejecutar
-                let mut cmd_line: Vec<u16> =
-                    format!("{}\0", agent_exe).encode_utf16().collect();
+                let mut cmd_line: Vec<u16> = format!("{}\0", agent_exe).encode_utf16().collect();
                 let project_str: Vec<u16> = format!("{}\0", project_dir.display())
                     .encode_utf16()
                     .collect();
@@ -157,17 +143,13 @@ mod windows_impl {
                     None,
                     None,
                     false,
-                    EXTENDED_STARTUPINFO_PRESENT
-                        | CREATE_UNICODE_ENVIRONMENT
-                        | CREATE_NEW_CONSOLE,
+                    EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_CONSOLE,
                     Some(env_block.as_ptr() as *const std::ffi::c_void),
                     windows::core::PCWSTR(project_str.as_ptr()),
                     &startup_info.StartupInfo as *const _ as *const STARTUPINFOW,
                     &mut process_info,
                 )
-                .map_err(|e| {
-                    anyhow::anyhow!("CreateProcessW in AppContainer failed: {:?}", e)
-                })?;
+                .map_err(|e| anyhow::anyhow!("CreateProcessW in AppContainer failed: {:?}", e))?;
 
                 let pid = process_info.dwProcessId;
 
@@ -203,9 +185,7 @@ mod windows_impl {
 
     /// Aplica una DENY ACE al SID del AppContainer en la ruta dada.
     fn apply_deny_ace(path: &Path, container_sid: PSID) -> Result<(), SandboxError> {
-        let path_wide: Vec<u16> = format!("{}\0", path.display())
-            .encode_utf16()
-            .collect();
+        let path_wide: Vec<u16> = format!("{}\0", path.display()).encode_utf16().collect();
 
         unsafe {
             let mut dacl: *mut ACL = std::ptr::null_mut();
@@ -232,15 +212,15 @@ mod windows_impl {
             ea.grfInheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
             ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
             ea.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
-            ea.Trustee.ptstrName =
-                windows::core::PWSTR(container_sid.0 as *mut u16);
+            ea.Trustee.ptstrName = windows::core::PWSTR(container_sid.0 as *mut u16);
 
             let mut new_dacl: *mut ACL = std::ptr::null_mut();
-            SetEntriesInAclW(Some(&[ea]), Some(dacl), &mut new_dacl)
-                .map_err(|e| SandboxError::AceApplication {
+            SetEntriesInAclW(Some(&[ea]), Some(dacl), &mut new_dacl).map_err(|e| {
+                SandboxError::AceApplication {
                     path: path.display().to_string(),
                     err: format!("{:?}", e),
-                })?;
+                }
+            })?;
 
             SetNamedSecurityInfoW(
                 windows::core::PCWSTR(path_wide.as_ptr()),
@@ -301,7 +281,11 @@ mod windows_impl {
         pub fn report(&self) -> String {
             format!(
                 "AppContainer={} ETW={}",
-                if self.appcontainer_available { "yes" } else { "no" },
+                if self.appcontainer_available {
+                    "yes"
+                } else {
+                    "no"
+                },
                 if self.etw_available { "yes" } else { "no" },
             )
         }
@@ -311,8 +295,8 @@ mod windows_impl {
 #[cfg(not(target_os = "windows"))]
 #[allow(dead_code)]
 mod stub_impl {
-    use std::path::Path;
     use agentguard_core::config::Config;
+    use std::path::Path;
 
     pub struct SandboxLauncher;
 

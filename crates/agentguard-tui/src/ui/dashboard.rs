@@ -40,16 +40,17 @@ fn render_banner(f: &mut Frame, state: &AppState, area: Rect) {
         state.daemon.version,
         state.daemon.guard_backend,
         state.daemon.protection_level,
-        if state.daemon.dlp_enabled { "ON" } else { "OFF" },
+        if state.daemon.dlp_enabled {
+            "ON"
+        } else {
+            "OFF"
+        },
         state.daemon.sandbox_mode.as_deref().unwrap_or("N/A"),
     );
 
-    let banner = Paragraph::new(format!(
-        "    {}\n    {}",
-        status.0, subtitle,
-    ))
-    .style(ratatui::style::Style::default().fg(status.1))
-    .block(Block::default().borders(Borders::NONE));
+    let banner = Paragraph::new(format!("    {}\n    {}", status.0, subtitle,))
+        .style(ratatui::style::Style::default().fg(status.1))
+        .block(Block::default().borders(Borders::NONE));
 
     f.render_widget(banner, area);
 }
@@ -73,7 +74,11 @@ fn render_cards(f: &mut Frame, state: &AppState, area: Rect) {
         cards[0],
         "Protected Paths",
         &dirs_count.to_string(),
-        &format!("{} dirs · {} files", state.daemon.protected_dirs.len(), state.daemon.protected_files.len()),
+        &format!(
+            "{} dirs · {} files",
+            state.daemon.protected_dirs.len(),
+            state.daemon.protected_files.len()
+        ),
         theme::BG,
     );
     render_card(
@@ -82,7 +87,11 @@ fn render_cards(f: &mut Frame, state: &AppState, area: Rect) {
         "Incidents (24h)",
         &inc_count.to_string(),
         "",
-        if inc_count > 0 { theme::SURFACE } else { theme::BG },
+        if inc_count > 0 {
+            theme::SURFACE
+        } else {
+            theme::BG
+        },
     );
     render_card(
         f,
@@ -94,16 +103,21 @@ fn render_cards(f: &mut Frame, state: &AppState, area: Rect) {
     );
 }
 
-fn render_card(f: &mut Frame, area: Rect, title: &str, value: &str, subtitle: &str, bg: ratatui::style::Color) {
+fn render_card(
+    f: &mut Frame,
+    area: Rect,
+    title: &str,
+    value: &str,
+    subtitle: &str,
+    bg: ratatui::style::Color,
+) {
     let text = format!("{}\n\n{}\n{}", title, value, subtitle);
-    let para = Paragraph::new(text)
-        .style(theme::heading_style())
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(theme::muted_style())
-                .style(ratatui::style::Style::default().bg(bg)),
-        );
+    let para = Paragraph::new(text).style(theme::heading_style()).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(theme::muted_style())
+            .style(ratatui::style::Style::default().bg(bg)),
+    );
     f.render_widget(para, area);
 }
 
@@ -116,7 +130,13 @@ fn render_activity(f: &mut Frame, state: &AppState, area: Rect) {
     let content = if state.incidents.is_empty() {
         "No recent incidents. Your system is clean.".to_string()
     } else {
-        state.incidents.iter().take(8).cloned().collect::<Vec<_>>().join("\n")
+        state
+            .incidents
+            .iter()
+            .take(8)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
     };
 
     let para = Paragraph::new(content)

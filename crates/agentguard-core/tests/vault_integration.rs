@@ -85,8 +85,14 @@ async fn hash_stability_across_snapshots() {
     write(&file, b"never changes");
 
     let vault = Vault::with_dir(tmp.path().join("vault")).expect("vault");
-    let s1 = vault.create_snapshot(std::slice::from_ref(&zone), "a").await.expect("s1");
-    let s2 = vault.create_snapshot(std::slice::from_ref(&zone), "b").await.expect("s2");
+    let s1 = vault
+        .create_snapshot(std::slice::from_ref(&zone), "a")
+        .await
+        .expect("s1");
+    let s2 = vault
+        .create_snapshot(std::slice::from_ref(&zone), "b")
+        .await
+        .expect("s2");
 
     assert_eq!(s1.files[0].hash, s2.files[0].hash);
     // Hash BLAKE3 de "never changes"

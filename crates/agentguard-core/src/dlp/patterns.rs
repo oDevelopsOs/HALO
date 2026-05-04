@@ -66,9 +66,7 @@ pub fn compile_defaults() -> Result<Vec<CompiledPattern>, PatternError> {
 }
 
 /// Compila una lista de patrones custom.
-pub fn compile_custom(
-    custom: &[(String, String)],
-) -> Result<Vec<CompiledPattern>, PatternError> {
+pub fn compile_custom(custom: &[(String, String)]) -> Result<Vec<CompiledPattern>, PatternError> {
     custom
         .iter()
         .map(|(name, re)| {
@@ -86,9 +84,7 @@ pub fn compile_custom(
 }
 
 /// Compila defaults + custom.
-pub fn compile_all(
-    custom: &[(String, String)],
-) -> Result<Vec<CompiledPattern>, PatternError> {
+pub fn compile_all(custom: &[(String, String)]) -> Result<Vec<CompiledPattern>, PatternError> {
     let mut all = compile_defaults()?;
     all.extend(compile_custom(custom)?);
     Ok(all)

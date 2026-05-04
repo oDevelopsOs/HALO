@@ -40,15 +40,12 @@ impl SandboxLauncher {
     ) -> Result<u32, anyhow::Error> {
         // Verificar que bwrap está instalado
         let bwrap_path = which::which("bwrap").map_err(|_| {
-            anyhow::anyhow!(
-                "bwrap not found — install with: sudo apt install bubblewrap"
-            )
+            anyhow::anyhow!("bwrap not found — install with: sudo apt install bubblewrap")
         })?;
 
         // Resolver la ruta real del agente
-        let agent_path = which::which(agent_exe).map_err(|_| {
-            anyhow::anyhow!("executable '{}' not found in PATH", agent_exe)
-        })?;
+        let agent_path = which::which(agent_exe)
+            .map_err(|_| anyhow::anyhow!("executable '{}' not found in PATH", agent_exe))?;
 
         let mut cmd = Command::new(&bwrap_path);
 

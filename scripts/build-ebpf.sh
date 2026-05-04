@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Build AgentGuard eBPF LSM programs.
 #
-# Compila file_guard.rs y net_guard.rs a bytecode BPF para el target
-# bpfel-unknown-none usando nightly Rust.
+# Compila file_guard.rs, net_guard.rs y process_exec.rs a bytecode BPF
+# para el target bpfel-unknown-none usando nightly Rust.
 #
-# Salida: target/ebpf/file_guard  y  target/ebpf/net_guard
+# Salida: target/ebpf/file_guard, target/ebpf/net_guard,
+#         target/ebpf/process_exec
 #
 # Requisitos:
 #   - rustup instalado, toolchain nightly presente
@@ -54,6 +55,7 @@ mkdir -p "$OUT_DIR"
     BIN_DIR="$PROJECT_ROOT/target/ebpf-target/bpfel-unknown-none/release"
     cp -f "$BIN_DIR/file_guard" "$OUT_DIR/file_guard"
     cp -f "$BIN_DIR/net_guard"  "$OUT_DIR/net_guard"
+    cp -f "$BIN_DIR/process_exec" "$OUT_DIR/process_exec"
 )
 
-echo "=== Done: $OUT_DIR/file_guard, $OUT_DIR/net_guard ==="
+echo "=== Done: $OUT_DIR/file_guard, $OUT_DIR/net_guard, $OUT_DIR/process_exec ==="

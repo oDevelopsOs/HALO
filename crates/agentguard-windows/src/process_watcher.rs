@@ -14,17 +14,15 @@ mod windows_impl {
     use std::sync::Arc;
     use tokio::sync::{mpsc, RwLock};
     use windows::core::GUID;
-    use windows::Win32::System::Diagnostics::Etw::*;
     use windows::Win32::Foundation::*;
+    use windows::Win32::System::Diagnostics::Etw::*;
 
     use agentguard_core::config::Config;
     use agentguard_core::SecurityEvent;
 
     /// GUID del proveedor del kernel para eventos de procesos.
     /// {22FB2CD6-0E7B-422B-A0C7-2FAD1FD0E716}
-    const KERNEL_PROCESS_PROVIDER: GUID = GUID::from_u128(
-        0x22FB2CD6_0E7B_422B_A0C7_2FAD1FD0E716,
-    );
+    const KERNEL_PROCESS_PROVIDER: GUID = GUID::from_u128(0x22FB2CD6_0E7B_422B_A0C7_2FAD1FD0E716);
 
     const EVENT_ID_PROCESS_START: u16 = 1;
 
@@ -34,10 +32,7 @@ mod windows_impl {
     }
 
     impl ProcessWatcher {
-        pub fn new(
-            config: Arc<RwLock<Config>>,
-            event_tx: mpsc::Sender<SecurityEvent>,
-        ) -> Self {
+        pub fn new(config: Arc<RwLock<Config>>, event_tx: mpsc::Sender<SecurityEvent>) -> Self {
             Self { config, event_tx }
         }
 
@@ -59,8 +54,7 @@ mod windows_impl {
                 .encode_utf16()
                 .collect::<Vec<u16>>();
 
-            let buf_size = core::mem::size_of::<EVENT_TRACE_PROPERTIES>()
-                + session_name.len() * 2;
+            let buf_size = core::mem::size_of::<EVENT_TRACE_PROPERTIES>() + session_name.len() * 2;
             let mut buf = vec![0u8; buf_size];
 
             let props = buf.as_mut_ptr() as *mut EVENT_TRACE_PROPERTIES;
@@ -96,7 +90,8 @@ mod windows_impl {
                         &mut session_handle,
                         windows::core::PCWSTR(session_name.as_ptr()),
                         props,
-                    ).ok()?;
+                    )
+                    .ok()?;
                 } else if result != 0 {
                     anyhow::bail!("StartTraceW failed: {}", result);
                 }
@@ -110,20 +105,17 @@ mod windows_impl {
                     0,
                     0,
                     None,
-                ).ok()?;
+                )
+                .ok()?;
             }
 
             tracing::info!("ETW session started, monitoring process creation events");
 
             let mut log_file = EVENT_TRACE_LOGFILEW::default();
-            let session_name_w: Vec<u16> = "AgentGuard-ProcessWatcher\0"
-                .encode_utf16()
-                .collect();
+            let session_name_w: Vec<u16> = "AgentGuard-ProcessWatcher\0".encode_utf16().collect();
 
             unsafe {
-                log_file.LoggerName = windows::core::PWSTR(
-                    session_name_w.as_ptr() as *mut u16
-                );
+                log_file.LoggerName = windows::core::PWSTR(session_name_w.as_ptr() as *mut u16);
                 log_file.Anonymous1.ProcessTraceMode =
                     PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD;
                 log_file.EventRecordCallback = Some(Self::event_callback);
@@ -169,9 +161,10 @@ mod windows_impl {
 
             let is_agent = if let Ok(cfg) = watcher.config.try_read() {
                 cfg.agent_detection.known_agents.iter().any(|agent| {
-                    agent.exe.iter().any(|exe| {
-                        image_name.to_lowercase().contains(&exe.to_lowercase())
-                    })
+                    agent
+                        .exe
+                        .iter()
+                        .any(|exe| image_name.to_lowercase().contains(&exe.to_lowercase()))
                 })
             } else {
                 false
@@ -216,12 +209,9 @@ mod windows_impl {
 
     // ── Polling fallback ──────────────────────────────────────────────────
 
-    pub async fn start_polling(
-        config: Arc<RwLock<Config>>,
-        event_tx: mpsc::Sender<SecurityEvent>,
-    ) {
-        use sysinfo::{ProcessRefreshKind, RefreshKind, System};
+    pub async fn start_polling(config: Arc<RwLock<Config>>, event_tx: mpsc::Sender<SecurityEvent>) {
         use sysinfo::Pid;
+        use sysinfo::{ProcessRefreshKind, RefreshKind, System};
 
         let mut system = System::new_with_specifics(
             RefreshKind::new()
@@ -258,10 +248,7 @@ mod windows_impl {
 
                 if is_agent {
                     known_pids.insert(pid_u32);
-                    let cwd = process
-                        .cwd()
-                        .map(|p| p.to_path_buf())
-                        .unwrap_or_default();
+                    let cwd = process.cwd().map(|p| p.to_path_buf()).unwrap_or_default();
 
                     tracing::info!(
                         agent = %exe_name,
@@ -284,9 +271,7 @@ mod windows_impl {
                 }
             }
 
-            known_pids.retain(|pid| {
-                system.process(Pid::from_u32(*pid)).is_some()
-            });
+            known_pids.retain(|pid| system.process(Pid::from_u32(*pid)).is_some());
 
             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         }
@@ -306,10 +291,7 @@ mod stub_impl {
     pub struct ProcessWatcher;
 
     impl ProcessWatcher {
-        pub fn new(
-            _config: Arc<RwLock<Config>>,
-            _event_tx: mpsc::Sender<SecurityEvent>,
-        ) -> Self {
+        pub fn new(_config: Arc<RwLock<Config>>, _event_tx: mpsc::Sender<SecurityEvent>) -> Self {
             tracing::info!("ProcessWatcher: not available on this platform (Windows only)");
             Self
         }

@@ -22,9 +22,9 @@
 //! retorna error al intentar cualquier operación.
 
 // ── Platform-independent imports ─────────────────────────────
-use std::collections::HashSet;
 #[cfg(windows)]
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
@@ -88,10 +88,7 @@ impl Drop for WindowsGuard {
 impl WindowsGuard {
     /// Crea un nuevo guard y aplica DENY ACEs a todas las rutas protegidas.
     #[cfg(windows)]
-    pub fn new(
-        paths: &[PathBuf],
-        agent_patterns: Vec<AgentProcess>,
-    ) -> Result<Self, GuardError> {
+    pub fn new(paths: &[PathBuf], agent_patterns: Vec<AgentProcess>) -> Result<Self, GuardError> {
         let mut canonical = HashSet::new();
         for p in paths {
             match canonicalize(p) {
@@ -120,10 +117,7 @@ impl WindowsGuard {
     }
 
     #[cfg(not(windows))]
-    pub fn new(
-        _paths: &[PathBuf],
-        agent_patterns: Vec<AgentProcess>,
-    ) -> Result<Self, GuardError> {
+    pub fn new(_paths: &[PathBuf], agent_patterns: Vec<AgentProcess>) -> Result<Self, GuardError> {
         warn!("WindowsGuard is a stub on this platform — no protection available");
         Ok(Self {
             protected_paths: HashSet::new(),
@@ -183,10 +177,7 @@ impl KernelGuard for WindowsGuard {
         }
     }
 
-    async fn run(
-        mut self: Box<Self>,
-        tx: mpsc::Sender<SecurityEvent>,
-    ) -> Result<(), GuardError> {
+    async fn run(mut self: Box<Self>, tx: mpsc::Sender<SecurityEvent>) -> Result<(), GuardError> {
         #[cfg(windows)]
         {
             use windows::Win32::Foundation::CloseHandle;
@@ -244,7 +235,9 @@ impl KernelGuard for WindowsGuard {
             let _ = tokio::join!(watch_handle, scan_handle);
 
             for (&_pid, &handle) in &jobs {
-                unsafe { let _ = CloseHandle(handle); }
+                unsafe {
+                    let _ = CloseHandle(handle);
+                }
             }
             drop(watcher);
             Ok(())
@@ -267,9 +260,9 @@ mod win32 {
     //! Módulo interno con toda la lógica específica de Windows.
     //! Aislado aquí para que el resto del crate compile en Linux.
 
-use std::collections::HashSet;
-#[cfg(windows)]
-use std::collections::HashMap;
+    #[cfg(windows)]
+    use std::collections::HashMap;
+    use std::collections::HashSet;
     use std::ffi::c_void;
     use std::path::{Path, PathBuf};
 
@@ -280,34 +273,29 @@ use std::collections::HashMap;
     use agentguard_core::{GuardError, SecurityEvent, ViolationKind};
 
     use windows::core::PCWSTR;
-    use windows::Win32::Foundation::{
-        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, HANDLE,
-    };
-    use windows::Win32::Security::{
-        GetTokenInformation,
-        TOKEN_QUERY, TOKEN_USER,
-    };
+    use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, HANDLE};
     use windows::Win32::Security::Authorization::{
-        GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W,
-        DENY_ACCESS, SUB_CONTAINERS_AND_OBJECTS_INHERIT, TRUSTEE_IS_SID,
-        TRUSTEE_W, ACL, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
-        SE_FILE_OBJECT,
+        GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, ACL,
+        DACL_SECURITY_INFORMATION, DENY_ACCESS, EXPLICIT_ACCESS_W,
+        PROTECTED_DACL_SECURITY_INFORMATION, SE_FILE_OBJECT, SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+        TRUSTEE_IS_SID, TRUSTEE_W,
     };
+    use windows::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER};
     use windows::Win32::Storage::FileSystem::{
-        FILE_DELETE_CHILD, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, DELETE,
+        DELETE, FILE_DELETE_CHILD, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA,
         WRITE_DAC, WRITE_OWNER,
     };
     use windows::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
-        JobObjectBasicLimitInformation, JOBOBJECT_BASIC_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION,
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicLimitInformation,
+        SetInformationJobObject, JOBOBJECT_BASIC_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     use windows::Win32::System::Threading::{
-        CreateToolhelp32Snapshot, OpenProcess, Process32FirstW, Process32NextW,
-        GetCurrentProcessId, GetCurrentProcess, OpenProcessToken, PROCESSENTRY32W,
-        PROCESS_SET_QUOTA, PROCESS_TERMINATE, PROCESS_QUERY_INFORMATION,
-        PROCESS_VM_READ, TH32CS_SNAPPROCESS, PROCESS_BASIC_INFORMATION,
-        NtQueryInformationProcess, PROCESSINFOCLASS, TokenUser,
+        CreateToolhelp32Snapshot, GetCurrentProcess, GetCurrentProcessId,
+        NtQueryInformationProcess, OpenProcess, OpenProcessToken, Process32FirstW, Process32NextW,
+        TokenUser, PROCESSENTRY32W, PROCESSINFOCLASS, PROCESS_BASIC_INFORMATION,
+        PROCESS_QUERY_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE, PROCESS_VM_READ,
+        TH32CS_SNAPPROCESS,
     };
 
     /// Permisos que se deniegan en las carpetas protegidas.
@@ -435,14 +423,14 @@ use std::collections::HashMap;
 
             if result.is_err() {
                 if new_dacl as *const _ != dacl as *const _ {
-                    windows::Win32::Foundation::LocalFree(
-                        windows::Win32::Foundation::HLOCAL(new_dacl as isize),
-                    );
+                    windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(
+                        new_dacl as isize,
+                    ));
                 }
                 if !sec_desc.is_null() {
-                    windows::Win32::Foundation::LocalFree(
-                        windows::Win32::Foundation::HLOCAL(sec_desc as isize),
-                    );
+                    windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(
+                        sec_desc as isize,
+                    ));
                 }
                 let code = GetLastError();
                 return Err(GuardError::Internal(format!(
@@ -453,14 +441,14 @@ use std::collections::HashMap;
 
         unsafe {
             if new_dacl as *const _ != dacl as *const _ {
-                windows::Win32::Foundation::LocalFree(
-                    windows::Win32::Foundation::HLOCAL(new_dacl as isize),
-                );
+                windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(
+                    new_dacl as isize,
+                ));
             }
             if !sec_desc.is_null() {
-                windows::Win32::Foundation::LocalFree(
-                    windows::Win32::Foundation::HLOCAL(sec_desc as isize),
-                );
+                windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(
+                    sec_desc as isize,
+                ));
             }
         }
 
@@ -548,14 +536,14 @@ use std::collections::HashMap;
 
         unsafe {
             if new_dacl as *const _ != dacl as *const _ {
-                windows::Win32::Foundation::LocalFree(
-                    windows::Win32::Foundation::HLOCAL(new_dacl as isize),
-                );
+                windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(
+                    new_dacl as isize,
+                ));
             }
             if !sec_desc.is_null() {
-                windows::Win32::Foundation::LocalFree(
-                    windows::Win32::Foundation::HLOCAL(sec_desc as isize),
-                );
+                windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(
+                    sec_desc as isize,
+                ));
             }
         }
 
@@ -575,7 +563,11 @@ use std::collections::HashMap;
             GetTokenInformation(token, TOKEN_USER, None, 0, &mut size);
             let mut buf: Vec<u8> = vec![0u8; size as usize];
             GetTokenInformation(
-                token, TOKEN_USER, Some(buf.as_mut_ptr() as *mut _), size, &mut size,
+                token,
+                TOKEN_USER,
+                Some(buf.as_mut_ptr() as *mut _),
+                size,
+                &mut size,
             )
             .map_err(|e| format!("GetTokenInformation: {e}"))?;
 
@@ -685,9 +677,7 @@ use std::collections::HashMap;
                 std::mem::size_of::<RtlUserProcessParameters>(),
                 &mut bytes_read,
             );
-            if read_ok.is_err()
-                || bytes_read != std::mem::size_of::<RtlUserProcessParameters>()
-            {
+            if read_ok.is_err() || bytes_read != std::mem::size_of::<RtlUserProcessParameters>() {
                 return None;
             }
 
@@ -738,11 +728,7 @@ use std::collections::HashMap;
 
     // ── Agent detection ────────────────────────────────────
 
-    pub fn matches_agent_full(
-        patterns: &[AgentProcess],
-        exe_name: &str,
-        cmdline: &str,
-    ) -> bool {
+    pub fn matches_agent_full(patterns: &[AgentProcess], exe_name: &str, cmdline: &str) -> bool {
         let lower_exe = exe_name.to_lowercase();
         let lower_cmd = cmdline.to_lowercase();
 
@@ -750,7 +736,10 @@ use std::collections::HashMap;
             let name_lower = p.name.to_lowercase();
 
             if lower_exe.contains(&name_lower)
-                || p.r#match.exe_any.iter().any(|e| lower_exe.contains(&e.to_lowercase()))
+                || p.r#match
+                    .exe_any
+                    .iter()
+                    .any(|e| lower_exe.contains(&e.to_lowercase()))
             {
                 if !p.r#match.argv_contains_any.is_empty()
                     && !p
@@ -781,7 +770,10 @@ use std::collections::HashMap;
         patterns.iter().any(|p| {
             let name_lower = p.name.to_lowercase();
             lower.contains(&name_lower)
-                || p.r#match.exe_any.iter().any(|e| lower.contains(&e.to_lowercase()))
+                || p.r#match
+                    .exe_any
+                    .iter()
+                    .any(|e| lower.contains(&e.to_lowercase()))
         })
     }
 
@@ -904,12 +896,16 @@ use std::collections::HashMap;
             let h = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION, false, pid) };
             match h {
                 Ok(handle) => {
-                    unsafe { let _ = CloseHandle(handle); }
+                    unsafe {
+                        let _ = CloseHandle(handle);
+                    }
                     true
                 }
                 Err(_) => {
                     if let Some(job) = jobs.remove(&pid) {
-                        unsafe { let _ = CloseHandle(job); }
+                        unsafe {
+                            let _ = CloseHandle(job);
+                        }
                         info!(pid, "released job object for terminated agent");
                     }
                     false
@@ -917,10 +913,16 @@ use std::collections::HashMap;
             }
         });
 
-        let orphan: Vec<u32> = jobs.keys().filter(|k| !tracked.contains(k)).copied().collect();
+        let orphan: Vec<u32> = jobs
+            .keys()
+            .filter(|k| !tracked.contains(k))
+            .copied()
+            .collect();
         for pid in orphan {
             if let Some(job) = jobs.remove(&pid) {
-                unsafe { let _ = CloseHandle(job); }
+                unsafe {
+                    let _ = CloseHandle(job);
+                }
             }
         }
     }
@@ -992,8 +994,14 @@ mod tests {
     #[test]
     fn matches_common_ai_agents() {
         let patterns = vec![
-            AgentProcess { name: "cursor".into(), r#match: Default::default() },
-            AgentProcess { name: "claude".into(), r#match: Default::default() },
+            AgentProcess {
+                name: "cursor".into(),
+                r#match: Default::default(),
+            },
+            AgentProcess {
+                name: "claude".into(),
+                r#match: Default::default(),
+            },
         ];
 
         assert!(win_matches(&patterns, "Cursor.exe", ""));
@@ -1032,8 +1040,16 @@ mod tests {
             },
         }];
 
-        assert!(win_matches(&patterns, "node.exe", "node.exe --agent-mode --port 8080"));
-        assert!(win_matches(&patterns, "python.exe", "python.exe -m agent --copilot"));
+        assert!(win_matches(
+            &patterns,
+            "node.exe",
+            "node.exe --agent-mode --port 8080"
+        ));
+        assert!(win_matches(
+            &patterns,
+            "python.exe",
+            "python.exe -m agent --copilot"
+        ));
         assert!(!win_matches(&patterns, "node.exe", "node.exe server.js"));
     }
 
@@ -1049,8 +1065,16 @@ mod tests {
             },
         }];
 
-        assert!(win_matches(&patterns, "Cursor.exe", r"C:\Programs\Cursor\Cursor.exe --agent"));
-        assert!(!win_matches(&patterns, "Cursor.exe", r"C:\Programs\Cursor\Cursor.exe"));
+        assert!(win_matches(
+            &patterns,
+            "Cursor.exe",
+            r"C:\Programs\Cursor\Cursor.exe --agent"
+        ));
+        assert!(!win_matches(
+            &patterns,
+            "Cursor.exe",
+            r"C:\Programs\Cursor\Cursor.exe"
+        ));
     }
 
     #[test]
@@ -1065,8 +1089,16 @@ mod tests {
             },
         }];
 
-        assert!(win_matches(&patterns, "python.exe", "python.exe --llm-backend openai"));
-        assert!(!win_matches(&patterns, "python.exe", "python.exe my_script.py"));
+        assert!(win_matches(
+            &patterns,
+            "python.exe",
+            "python.exe --llm-backend openai"
+        ));
+        assert!(!win_matches(
+            &patterns,
+            "python.exe",
+            "python.exe my_script.py"
+        ));
     }
 
     #[test]
@@ -1081,12 +1113,19 @@ mod tests {
             },
         }];
 
-        assert!(win_matches(&patterns, "test.exe", "test.exe --agent-mode --verbose"));
+        assert!(win_matches(
+            &patterns,
+            "test.exe",
+            "test.exe --agent-mode --verbose"
+        ));
     }
 
     #[test]
     fn exe_only_fallback() {
-        let _patterns = [AgentProcess { name: "cursor".into(), r#match: Default::default() }];
+        let _patterns = [AgentProcess {
+            name: "cursor".into(),
+            r#match: Default::default(),
+        }];
 
         #[cfg(windows)]
         {
@@ -1115,7 +1154,10 @@ mod tests {
         patterns.iter().any(|p| {
             let name_lower = p.name.to_lowercase();
             if lower_exe.contains(&name_lower)
-                || p.r#match.exe_any.iter().any(|e| lower_exe.contains(&e.to_lowercase()))
+                || p.r#match
+                    .exe_any
+                    .iter()
+                    .any(|e| lower_exe.contains(&e.to_lowercase()))
             {
                 if !p.r#match.argv_contains_any.is_empty()
                     && !p

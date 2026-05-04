@@ -18,7 +18,12 @@ pub fn render(f: &mut Frame, state: &AppState, area: Rect) {
         .borders(Borders::ALL)
         .border_style(theme::BORDER);
 
-    let content = if state.incidents.is_empty() || state.incidents.iter().all(|s| s == "No incidents recorded yet.") {
+    let content = if state.incidents.is_empty()
+        || state
+            .incidents
+            .iter()
+            .all(|s| s == "No incidents recorded yet.")
+    {
         "No security incidents detected. Your data is safe.\n\nViolations appear here in real-time when an AI agent\nattempts to access or exfiltrate protected data.".to_string()
     } else {
         state.incidents.join("\n")

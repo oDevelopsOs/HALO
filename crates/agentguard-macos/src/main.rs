@@ -152,13 +152,19 @@ async fn main() -> Result<()> {
     );
 
     // ── Vault ───────────────────────────────────────────────
-    let vault_dir = if config.vault.vault_dir.as_os_str().is_empty() { default_vault_dir() } else { config.vault.vault_dir.clone() };
-    let vault = Vault::with_dir(&vault_dir)
-        .with_context(|| format!("vault at {vault_dir:?}"))?;
+    let vault_dir = if config.vault.vault_dir.as_os_str().is_empty() {
+        default_vault_dir()
+    } else {
+        config.vault.vault_dir.clone()
+    };
+    let vault = Vault::with_dir(&vault_dir).with_context(|| format!("vault at {vault_dir:?}"))?;
     info!(path = ?vault.root(), "vault ready");
 
     if config.vault.snapshot_on_start && !config.protected_dirs.is_empty() {
-        match vault.create_snapshot(&config.protected_dirs, "startup").await {
+        match vault
+            .create_snapshot(&config.protected_dirs, "startup")
+            .await
+        {
             Ok(s) => info!(id = %s.id, files = s.files.len(), "startup snapshot created"),
             Err(e) => warn!(error = %e, "startup snapshot failed"),
         }
@@ -166,10 +172,9 @@ async fn main() -> Result<()> {
 
     // ── CA (HTTPS MITM) ─────────────────────────────────────
     let ca_dir = default_ca_dir();
-    let ca = LocalCa::load_or_generate(&ca_dir)
-        .with_context(|| format!("CA at {ca_dir:?}"))?;
-    let leaf_issuer = LeafIssuer::new(&ca)
-        .with_context(|| "failed to initialize TLS leaf certificate issuer")?;
+    let ca = LocalCa::load_or_generate(&ca_dir).with_context(|| format!("CA at {ca_dir:?}"))?;
+    let leaf_issuer =
+        LeafIssuer::new(&ca).with_context(|| "failed to initialize TLS leaf certificate issuer")?;
     info!(cert_path = ?ca.cert_path(), "CA root ready");
 
     // ── Guard (macOS: chflags + FSEvents) ───────────────────
@@ -190,8 +195,12 @@ async fn main() -> Result<()> {
 
     // ── DLP proxy ───────────────────────────────────────────
     let dlp_handle = if config.dlp.enabled {
-        let custom: Vec<(String, String)> = config.dlp.custom_patterns.iter()
-            .map(|p| (p.name.clone(), p.regex.clone())).collect();
+        let custom: Vec<(String, String)> = config
+            .dlp
+            .custom_patterns
+            .iter()
+            .map(|p| (p.name.clone(), p.regex.clone()))
+            .collect();
         match compile_all(&custom) {
             Ok(patterns) => {
                 let action = config.dlp_action()?;
@@ -200,28 +209,51 @@ async fn main() -> Result<()> {
                     .with_events(event_tx.clone())
                     .with_tls(leaf_issuer.clone());
                 match proxy.start(addr).await {
-                    Ok(h) => { info!(addr = %h.local_addr(), "DLP proxy started"); Some(h) }
-                    Err(e) => { error!(error = %e, "DLP proxy failed"); None }
+                    Ok(h) => {
+                        info!(addr = %h.local_addr(), "DLP proxy started");
+                        Some(h)
+                    }
+                    Err(e) => {
+                        error!(error = %e, "DLP proxy failed");
+                        None
+                    }
                 }
             }
-            Err(e) => { error!(error = %e, "DLP pattern compilation failed"); None }
+            Err(e) => {
+                error!(error = %e, "DLP pattern compilation failed");
+                None
+            }
         }
-    } else { info!("DLP disabled"); None };
+    } else {
+        info!("DLP disabled");
+        None
+    };
 
     // ── IPC server ──────────────────────────────────────────
     let log_path = incidents_log_path();
     let paused = Arc::new(AtomicBool::new(false));
-    let ipc_server = IpcServer::builder(vault.clone(), config.clone(), &guard_backend_name, &guard_level)
-        .incidents_log(log_path.clone())
-        .paused(paused.clone())
-        .sandbox_mode("monitor".to_string())
-        .capabilities("chflags=yes FSEvents=yes sandbox=N/A".to_string())
-        .build()
-        .with_context(|| "failed to create IPC server")?;
+    let ipc_server = IpcServer::builder(
+        vault.clone(),
+        config.clone(),
+        &guard_backend_name,
+        &guard_level,
+    )
+    .incidents_log(log_path.clone())
+    .paused(paused.clone())
+    .sandbox_mode("monitor".to_string())
+    .capabilities("chflags=yes FSEvents=yes sandbox=N/A".to_string())
+    .build()
+    .with_context(|| "failed to create IPC server")?;
     let ipc_socket_path = default_ipc_socket_path();
     let ipc_handle = match ipc_server.start(ipc_socket_path.clone()) {
-        Ok(h) => { info!(path = %ipc_socket_path.display(), "IPC server started"); Some(h) }
-        Err(e) => { error!(error = %e, "IPC server failed"); None }
+        Ok(h) => {
+            info!(path = %ipc_socket_path.display(), "IPC server started");
+            Some(h)
+        }
+        Err(e) => {
+            error!(error = %e, "IPC server failed");
+            None
+        }
     };
     drop(event_tx);
 
@@ -250,8 +282,12 @@ async fn main() -> Result<()> {
     }
     info!("shutting down");
     guard_task.abort();
-    if let Some(h) = dlp_handle { h.shutdown(); }
-    if let Some(h) = ipc_handle { h.shutdown(); }
+    if let Some(h) = dlp_handle {
+        h.shutdown();
+    }
+    if let Some(h) = ipc_handle {
+        h.shutdown();
+    }
     let _ = std::fs::remove_file(default_ipc_socket_path());
     info!("shutdown complete");
     Ok(())
@@ -261,9 +297,17 @@ async fn main() -> Result<()> {
 async fn persist_incident(log_path: &std::path::Path, event: &SecurityEvent) {
     let entry = match serde_json::to_string(event) {
         Ok(json) => format!("{json}\n"),
-        Err(e) => { error!(error = %e, "failed to serialize incident"); return; }
+        Err(e) => {
+            error!(error = %e, "failed to serialize incident");
+            return;
+        }
     };
-    match tokio::fs::OpenOptions::new().append(true).create(true).open(log_path).await {
+    match tokio::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(log_path)
+        .await
+    {
         Ok(mut f) => {
             if let Err(e) = tokio::io::AsyncWriteExt::write_all(&mut f, entry.as_bytes()).await {
                 error!(error = %e, "failed to write incident");
@@ -274,9 +318,20 @@ async fn persist_incident(log_path: &std::path::Path, event: &SecurityEvent) {
 }
 
 #[cfg(target_os = "macos")]
-async fn handle_event(vault: &Vault, snapshot_on_violation: bool, protected_paths: &[PathBuf], event: SecurityEvent) {
+async fn handle_event(
+    vault: &Vault,
+    snapshot_on_violation: bool,
+    protected_paths: &[PathBuf],
+    event: SecurityEvent,
+) {
     match &event {
-        SecurityEvent::FileViolation { path, process, pid, violation, .. } => {
+        SecurityEvent::FileViolation {
+            path,
+            process,
+            pid,
+            violation,
+            ..
+        } => {
             warn!(action = ?violation, path = ?path, process = %process, pid, "filesystem violation detected");
             if snapshot_on_violation && !protected_paths.is_empty() {
                 match vault.create_snapshot(protected_paths, "on-violation").await {
@@ -285,11 +340,23 @@ async fn handle_event(vault: &Vault, snapshot_on_violation: bool, protected_path
                 }
             }
         }
-        SecurityEvent::DlpViolation { pattern_name, destination, process, .. } => {
+        SecurityEvent::DlpViolation {
+            pattern_name,
+            destination,
+            process,
+            ..
+        } => {
             warn!(pattern = %pattern_name, destination = %destination, process = %process, "DLP violation detected");
         }
-        SecurityEvent::SystemError { message, .. } => { error!(message = %message, "system error from guard"); }
-        SecurityEvent::AgentDetected { pid, agent_name, cwd, .. } => {
+        SecurityEvent::SystemError { message, .. } => {
+            error!(message = %message, "system error from guard");
+        }
+        SecurityEvent::AgentDetected {
+            pid,
+            agent_name,
+            cwd,
+            ..
+        } => {
             info!(pid, agent = %agent_name, cwd = %cwd.display(), "AI agent detected");
         }
         SecurityEvent::AgentSandboxed { .. } => {

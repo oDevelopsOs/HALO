@@ -17,11 +17,11 @@ use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::client::legacy::{connect::HttpConnector, Client};
 use hyper_util::rt::TokioIo;
-use tokio::net::TcpStream;
 use rustls::pki_types::ServerName;
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{timeout, Duration};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
@@ -57,15 +57,21 @@ pub struct DlpProxyHandle {
 }
 
 impl DlpProxyHandle {
-    pub fn local_addr(&self) -> SocketAddr { self.local_addr }
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local_addr
+    }
     pub fn shutdown(mut self) {
-        if let Some(tx) = self.shutdown.take() { let _ = tx.send(()); }
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
     }
 }
 
 impl Drop for DlpProxyHandle {
     fn drop(&mut self) {
-        if let Some(tx) = self.shutdown.take() { let _ = tx.send(()); }
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
     }
 }
 
@@ -107,7 +113,9 @@ impl DlpProxy {
         let listener = TcpListener::bind(addr)
             .await
             .map_err(|source| ProxyError::Bind { addr, source })?;
-        let local_addr = listener.local_addr().map_err(|source| ProxyError::Bind { addr, source })?;
+        let local_addr = listener
+            .local_addr()
+            .map_err(|source| ProxyError::Bind { addr, source })?;
 
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
 
@@ -209,7 +217,10 @@ impl DlpProxy {
             }
         });
 
-        Ok(DlpProxyHandle { shutdown: Some(shutdown_tx), local_addr })
+        Ok(DlpProxyHandle {
+            shutdown: Some(shutdown_tx),
+            local_addr,
+        })
     }
 }
 
@@ -223,7 +234,10 @@ async fn handle_request(
     _upstream_root_store: Option<Arc<rustls::RootCertStore>>,
 ) -> Response<Full<Bytes>> {
     if req.method() == Method::CONNECT {
-        return text_response(StatusCode::NOT_IMPLEMENTED, "AgentGuard DLP: HTTPS MITM not enabled");
+        return text_response(
+            StatusCode::NOT_IMPLEMENTED,
+            "AgentGuard DLP: HTTPS MITM not enabled",
+        );
     }
 
     let (parts, body) = req.into_parts();
@@ -238,7 +252,10 @@ async fn handle_request(
         }
         Err(e @ BodyReadError::Io(_)) => {
             tracing::warn!(error = %e, "body read error");
-            return text_response(StatusCode::BAD_GATEWAY, "AgentGuard DLP: upstream body read error");
+            return text_response(
+                StatusCode::BAD_GATEWAY,
+                "AgentGuard DLP: upstream body read error",
+            );
         }
     };
 
@@ -253,13 +270,15 @@ async fn handle_request(
     if let Some(matched) = first_match(&patterns, &haystack) {
         tracing::warn!(pattern = %matched, destination = %uri_for_log, action = ?action, "DLP violation detected");
         if let Some(ref tx) = events {
-            let _ = tx.send(SecurityEvent::DlpViolation {
-                pattern_name: matched.to_string(),
-                destination: uri_for_log.clone(),
-                process: "<proxy-unknown>".into(),
-                pid: 0,
-                timestamp: now_ts(),
-            }).await;
+            let _ = tx
+                .send(SecurityEvent::DlpViolation {
+                    pattern_name: matched.to_string(),
+                    destination: uri_for_log.clone(),
+                    process: "<proxy-unknown>".into(),
+                    pid: 0,
+                    timestamp: now_ts(),
+                })
+                .await;
         }
         match action {
             DlpAction::Block => {
@@ -282,7 +301,10 @@ async fn forward_request(
 ) -> Response<Full<Bytes>> {
     let uri = parts.uri.clone();
     if uri.scheme().is_none() {
-        return text_response(StatusCode::BAD_REQUEST, "AgentGuard DLP: only absolute URIs are supported");
+        return text_response(
+            StatusCode::BAD_REQUEST,
+            "AgentGuard DLP: only absolute URIs are supported",
+        );
     }
     let mut builder = Request::builder().method(parts.method).uri(uri);
     for (k, v) in parts.headers.iter() {
@@ -291,7 +313,10 @@ async fn forward_request(
     let outbound = match builder.body(Full::new(body)) {
         Ok(r) => r,
         Err(e) => {
-            return text_response(StatusCode::BAD_REQUEST, &format!("AgentGuard DLP: cannot rebuild request: {e}"));
+            return text_response(
+                StatusCode::BAD_REQUEST,
+                &format!("AgentGuard DLP: cannot rebuild request: {e}"),
+            );
         }
     };
 
@@ -301,16 +326,29 @@ async fn forward_request(
             let bytes = match b.collect().await {
                 Ok(c) => c.to_bytes(),
                 Err(e) => {
-                    return text_response(StatusCode::BAD_GATEWAY, &format!("AgentGuard DLP: upstream body error: {e}"));
+                    return text_response(
+                        StatusCode::BAD_GATEWAY,
+                        &format!("AgentGuard DLP: upstream body error: {e}"),
+                    );
                 }
             };
             let mut out = Response::builder().status(p.status);
-            for (k, v) in p.headers.iter() { out = out.header(k, v); }
-            out.body(Full::new(bytes)).unwrap_or_else(|_| text_response(StatusCode::BAD_GATEWAY, "AgentGuard DLP: cannot rebuild response"))
+            for (k, v) in p.headers.iter() {
+                out = out.header(k, v);
+            }
+            out.body(Full::new(bytes)).unwrap_or_else(|_| {
+                text_response(
+                    StatusCode::BAD_GATEWAY,
+                    "AgentGuard DLP: cannot rebuild response",
+                )
+            })
         }
         Err(e) => {
             tracing::warn!(error = %e, "upstream error");
-            text_response(StatusCode::BAD_GATEWAY, "AgentGuard DLP: upstream connection error")
+            text_response(
+                StatusCode::BAD_GATEWAY,
+                "AgentGuard DLP: upstream connection error",
+            )
         }
     }
 }
@@ -360,7 +398,9 @@ fn dump_headers(headers: &hyper::HeaderMap) -> String {
     for (k, v) in headers.iter() {
         s.push_str(k.as_str());
         s.push_str(": ");
-        if let Ok(text) = v.to_str() { s.push_str(text); }
+        if let Ok(text) = v.to_str() {
+            s.push_str(text);
+        }
         s.push('\n');
     }
     s
@@ -375,14 +415,19 @@ fn sanitize_uri(uri: &str) -> String {
 
 fn looks_text(bytes: &[u8]) -> bool {
     let sample = &bytes[..bytes.len().min(256)];
-    if sample.contains(&0) { return false; }
+    if sample.contains(&0) {
+        return false;
+    }
     let non_ascii = sample.iter().filter(|b| **b > 127).count();
     sample.is_empty() || non_ascii * 10 < sample.len() * 3
 }
 
 fn now_ts() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 struct PrependBuf<R> {
@@ -391,8 +436,14 @@ struct PrependBuf<R> {
     inner: R,
 }
 
-impl<R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> tokio::io::AsyncRead for PrependBuf<R> {
-    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut tokio::io::ReadBuf<'_>) -> Poll<io::Result<()>> {
+impl<R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> tokio::io::AsyncRead
+    for PrependBuf<R>
+{
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
         if self.pos < self.buf.len() {
             let remaining = &self.buf[self.pos..];
             let to_copy = remaining.len().min(buf.remaining());
@@ -404,8 +455,14 @@ impl<R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> tokio::io::AsyncRe
     }
 }
 
-impl<R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for PrependBuf<R> {
-    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+impl<R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite
+    for PrependBuf<R>
+{
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
         Pin::new(&mut self.inner).poll_write(cx, buf)
     }
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -414,10 +471,16 @@ impl<R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWr
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.inner).poll_shutdown(cx)
     }
-    fn poll_write_vectored(mut self: Pin<&mut Self>, cx: &mut Context<'_>, bufs: &[io::IoSlice<'_>]) -> Poll<io::Result<usize>> {
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
         Pin::new(&mut self.inner).poll_write_vectored(cx, bufs)
     }
-    fn is_write_vectored(&self) -> bool { self.inner.is_write_vectored() }
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -433,20 +496,32 @@ async fn direct_connect_mitm(
 ) {
     let server_config = match issuer.server_config_for(&host) {
         Ok(cfg) => cfg,
-        Err(e) => { tracing::warn!(error = %e, %host, "MITM: failed to get leaf cert"); return; }
+        Err(e) => {
+            tracing::warn!(error = %e, %host, "MITM: failed to get leaf cert");
+            return;
+        }
     };
 
     let tls_acceptor = TlsAcceptor::from(server_config);
     let client_tls = match timeout(MITM_HANDSHAKE_TIMEOUT, tls_acceptor.accept(stream)).await {
         Ok(Ok(tls)) => tls,
-        Ok(Err(e)) => { tracing::warn!(error = %e, %host, "MITM: client TLS accept failed"); return; }
-        Err(_) => { tracing::warn!(%host, "MITM: client TLS handshake timed out"); return; }
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, %host, "MITM: client TLS accept failed");
+            return;
+        }
+        Err(_) => {
+            tracing::warn!(%host, "MITM: client TLS handshake timed out");
+            return;
+        }
     };
 
     let upstream_addr = format!("{host}:{port}");
     let upstream_tcp = match TcpStream::connect(&upstream_addr).await {
         Ok(s) => s,
-        Err(e) => { tracing::warn!(error = %e, %host, "MITM: upstream TCP connect failed"); return; }
+        Err(e) => {
+            tracing::warn!(error = %e, %host, "MITM: upstream TCP connect failed");
+            return;
+        }
     };
 
     let root_store = match upstream_root_store {
@@ -465,13 +540,27 @@ async fn direct_connect_mitm(
     let tls_connector = TlsConnector::from(client_cfg);
     let server_name = match ServerName::try_from(host.as_str()) {
         Ok(n) => n.to_owned(),
-        Err(e) => { tracing::warn!(error = %e, %host, "MITM: invalid server name"); return; }
+        Err(e) => {
+            tracing::warn!(error = %e, %host, "MITM: invalid server name");
+            return;
+        }
     };
 
-    let upstream_tls = match timeout(MITM_HANDSHAKE_TIMEOUT, tls_connector.connect(server_name, upstream_tcp)).await {
+    let upstream_tls = match timeout(
+        MITM_HANDSHAKE_TIMEOUT,
+        tls_connector.connect(server_name, upstream_tcp),
+    )
+    .await
+    {
         Ok(Ok(tls)) => tls,
-        Ok(Err(e)) => { tracing::warn!(error = %e, %host, "MITM: upstream TLS connect failed"); return; }
-        Err(_) => { tracing::warn!(%host, "MITM: upstream TLS handshake timed out"); return; }
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, %host, "MITM: upstream TLS connect failed");
+            return;
+        }
+        Err(_) => {
+            tracing::warn!(%host, "MITM: upstream TLS handshake timed out");
+            return;
+        }
     };
 
     tracing::info!(%host, port, "HTTPS MITM established");
@@ -495,19 +584,28 @@ async fn direct_connect_mitm(
                     if let Some(matched) = first_match(&fwd_patterns, &text) {
                         tracing::warn!(pattern = %matched, host = %fwd_host, "DLP violation in HTTPS stream");
                         if let Some(ref tx) = fwd_events {
-                            let _ = tx.send(SecurityEvent::DlpViolation {
-                                pattern_name: matched.to_string(),
-                                destination: format!("https://{}/", fwd_host),
-                                process: "<mitm>".into(),
-                                pid: 0,
-                                timestamp: now_ts(),
-                            }).await;
+                            let _ = tx
+                                .send(SecurityEvent::DlpViolation {
+                                    pattern_name: matched.to_string(),
+                                    destination: format!("https://{}/", fwd_host),
+                                    process: "<mitm>".into(),
+                                    pid: 0,
+                                    timestamp: now_ts(),
+                                })
+                                .await;
                         }
-                        if fwd_action == DlpAction::Block { break; }
+                        if fwd_action == DlpAction::Block {
+                            break;
+                        }
                     }
-                    if upstream_w.write_all(data).await.is_err() { break; }
+                    if upstream_w.write_all(data).await.is_err() {
+                        break;
+                    }
                 }
-                Err(e) => { tracing::debug!(error = %e, host = %fwd_host, "MITM client read error"); break; }
+                Err(e) => {
+                    tracing::debug!(error = %e, host = %fwd_host, "MITM client read error");
+                    break;
+                }
             }
         }
     });
@@ -519,9 +617,14 @@ async fn direct_connect_mitm(
             match upstream_r.read(&mut buf).await {
                 Ok(0) => break,
                 Ok(n) => {
-                    if client_w.write_all(&buf[..n]).await.is_err() { break; }
+                    if client_w.write_all(&buf[..n]).await.is_err() {
+                        break;
+                    }
                 }
-                Err(e) => { tracing::debug!(error = %e, host = %bwd_host, "MITM upstream read error"); break; }
+                Err(e) => {
+                    tracing::debug!(error = %e, host = %bwd_host, "MITM upstream read error");
+                    break;
+                }
             }
         }
     });
@@ -558,7 +661,10 @@ mod tests {
              Connection: close\r\n\
              \r\n\
              {body}",
-            host = hyper::Uri::try_from(absolute_uri).ok().and_then(|u| u.host().map(str::to_string)).unwrap_or_else(|| "unknown".into()),
+            host = hyper::Uri::try_from(absolute_uri)
+                .ok()
+                .and_then(|u| u.host().map(str::to_string))
+                .unwrap_or_else(|| "unknown".into()),
             len = body.len(),
         );
         stream.write_all(req.as_bytes()).await.expect("write");
@@ -568,14 +674,25 @@ mod tests {
         let text = String::from_utf8_lossy(&buf).to_string();
 
         let status_line = text.lines().next().unwrap_or("");
-        let code = status_line.split_whitespace().nth(1).and_then(|s| s.parse::<u16>().ok()).and_then(|n| StatusCode::from_u16(n).ok()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let code = status_line
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| s.parse::<u16>().ok())
+            .and_then(|n| StatusCode::from_u16(n).ok())
+            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         (code, text)
     }
 
     #[tokio::test]
     async fn blocks_request_with_openai_key_in_body() {
         let handle = start_test_proxy(DlpAction::Block).await;
-        let (code, body) = send_through_proxy(handle.local_addr(), "POST", "http://example.invalid/chat", "Authorization: Bearer sk-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMN").await;
+        let (code, body) = send_through_proxy(
+            handle.local_addr(),
+            "POST",
+            "http://example.invalid/chat",
+            "Authorization: Bearer sk-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMN",
+        )
+        .await;
         assert_eq!(code, StatusCode::FORBIDDEN, "response was:\n{body}");
         assert!(body.contains("AgentGuard DLP"));
         assert!(body.contains("OpenAI API Key"));
@@ -585,7 +702,13 @@ mod tests {
     #[tokio::test]
     async fn blocks_github_token_in_header() {
         let handle = start_test_proxy(DlpAction::Block).await;
-        let (code, body) = send_through_proxy(handle.local_addr(), "GET", "http://example.invalid/user", &format!("X-Custom: ghp_{}", "a".repeat(36))).await;
+        let (code, body) = send_through_proxy(
+            handle.local_addr(),
+            "GET",
+            "http://example.invalid/user",
+            &format!("X-Custom: ghp_{}", "a".repeat(36)),
+        )
+        .await;
         assert_eq!(code, StatusCode::FORBIDDEN);
         assert!(body.contains("GitHub Personal Token"));
         handle.shutdown();
@@ -594,7 +717,8 @@ mod tests {
     #[tokio::test]
     async fn rejects_connect_tunneling_with_501() {
         let handle = start_test_proxy(DlpAction::Block).await;
-        let (code, _) = send_through_proxy(handle.local_addr(), "CONNECT", "example.invalid:443", "").await;
+        let (code, _) =
+            send_through_proxy(handle.local_addr(), "CONNECT", "example.invalid:443", "").await;
         assert_eq!(code, StatusCode::NOT_IMPLEMENTED);
         handle.shutdown();
     }
@@ -602,15 +726,27 @@ mod tests {
     #[tokio::test]
     async fn clean_request_falls_through_to_upstream() {
         let handle = start_test_proxy(DlpAction::Block).await;
-        let (code, _) = send_through_proxy(handle.local_addr(), "POST", "http://127.0.0.1:1/anything", "hello world, nothing suspicious here").await;
+        let (code, _) = send_through_proxy(
+            handle.local_addr(),
+            "POST",
+            "http://127.0.0.1:1/anything",
+            "hello world, nothing suspicious here",
+        )
+        .await;
         assert_ne!(code, StatusCode::FORBIDDEN);
         handle.shutdown();
     }
 
     #[tokio::test]
     async fn sanitize_uri_strips_query_string() {
-        assert_eq!(sanitize_uri("https://api.example.com/v1?api_key=sk-secret"), "https://api.example.com/v1");
-        assert_eq!(sanitize_uri("http://example.com/path"), "http://example.com/path");
+        assert_eq!(
+            sanitize_uri("https://api.example.com/v1?api_key=sk-secret"),
+            "https://api.example.com/v1"
+        );
+        assert_eq!(
+            sanitize_uri("http://example.com/path"),
+            "http://example.com/path"
+        );
     }
 
     fn make_issuer_for_test() -> LeafIssuer {
@@ -621,7 +757,8 @@ mod tests {
     }
 
     async fn start_test_proxy_with_tls(action: DlpAction) -> DlpProxyHandle {
-        let proxy = DlpProxy::new(compile_defaults().expect("defaults"), action).with_tls(make_issuer_for_test());
+        let proxy = DlpProxy::new(compile_defaults().expect("defaults"), action)
+            .with_tls(make_issuer_for_test());
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
         proxy.start(addr).await.expect("proxy start")
     }
@@ -629,12 +766,15 @@ mod tests {
     #[tokio::test]
     async fn connect_with_tls_returns_200() {
         let handle = start_test_proxy_with_tls(DlpAction::Block).await;
-        let (code, _) = send_through_proxy(handle.local_addr(), "CONNECT", "api.openai.com:443", "").await;
+        let (code, _) =
+            send_through_proxy(handle.local_addr(), "CONNECT", "api.openai.com:443", "").await;
         assert_eq!(code, StatusCode::OK);
         handle.shutdown();
     }
 
-    async fn setup_mitm_e2e(action: DlpAction) -> (DlpProxyHandle, SocketAddr, oneshot::Sender<()>) {
+    async fn setup_mitm_e2e(
+        action: DlpAction,
+    ) -> (DlpProxyHandle, SocketAddr, oneshot::Sender<()>) {
         use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
         use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
         use tokio_rustls::TlsAcceptor as ServerAcceptor;
@@ -652,21 +792,34 @@ mod tests {
         server_params.distinguished_name = dn;
         server_params.not_before = time::OffsetDateTime::now_utc() - time::Duration::hours(1);
         server_params.not_after = time::OffsetDateTime::now_utc() + time::Duration::days(1);
-        let server_cert = server_params.signed_by(&server_key, ca.rcgen_cert().as_ref(), ca.rcgen_key().as_ref()).expect("server cert");
+        let server_cert = server_params
+            .signed_by(
+                &server_key,
+                ca.rcgen_cert().as_ref(),
+                ca.rcgen_key().as_ref(),
+            )
+            .expect("server cert");
 
         let server_config = rustls::ServerConfig::builder()
             .with_no_client_auth()
-            .with_single_cert(vec![server_cert.der().clone()], PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(server_key.serialize_der())))
+            .with_single_cert(
+                vec![server_cert.der().clone()],
+                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(server_key.serialize_der())),
+            )
             .expect("server config");
         let server_acceptor: ServerAcceptor = ServerAcceptor::from(Arc::new(server_config));
 
         let mut root_store = rustls::RootCertStore::empty();
         let mut pem_reader = std::io::BufReader::new(ca.cert_pem().as_bytes());
         for cert in rustls_pemfile::certs(&mut pem_reader) {
-            root_store.add(cert.expect("parse ca cert")).expect("add ca cert");
+            root_store
+                .add(cert.expect("parse ca cert"))
+                .expect("add ca cert");
         }
 
-        let tcp_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let tcp_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
         let server_addr = tcp_listener.local_addr().expect("server addr");
         let (server_shutdown, mut shutdown_rx) = oneshot::channel::<()>();
         let acceptor = server_acceptor;
@@ -688,21 +841,36 @@ mod tests {
         });
 
         let patterns = compile_defaults().expect("defaults");
-        let proxy = DlpProxy::new(patterns, action).with_tls(issuer).with_upstream_root_store(root_store);
-        let proxy_handle = proxy.start(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).await.expect("proxy start");
+        let proxy = DlpProxy::new(patterns, action)
+            .with_tls(issuer)
+            .with_upstream_root_store(root_store);
+        let proxy_handle = proxy
+            .start(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+            .await
+            .expect("proxy start");
 
         (proxy_handle, server_addr, server_shutdown)
     }
 
-    async fn mitm_client_send(proxy_addr: SocketAddr, server_addr: SocketAddr, ca_pem: &str, payload: &[u8]) -> Vec<u8> {
+    async fn mitm_client_send(
+        proxy_addr: SocketAddr,
+        server_addr: SocketAddr,
+        ca_pem: &str,
+        payload: &[u8],
+    ) -> Vec<u8> {
         use rustls::pki_types::ServerName;
         use tokio_rustls::TlsConnector;
 
-        let mut stream = tokio::net::TcpStream::connect(proxy_addr).await.expect("connect proxy");
+        let mut stream = tokio::net::TcpStream::connect(proxy_addr)
+            .await
+            .expect("connect proxy");
 
         let authority = format!("127.0.0.1:{}", server_addr.port());
         let connect_req = format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n");
-        stream.write_all(connect_req.as_bytes()).await.expect("write CONNECT");
+        stream
+            .write_all(connect_req.as_bytes())
+            .await
+            .expect("write CONNECT");
 
         let mut hdr = vec![0u8; 256];
         let n = stream.read(&mut hdr).await.expect("read CONNECT response");
@@ -714,10 +882,15 @@ mod tests {
         for cert in rustls_pemfile::certs(&mut pem_reader) {
             root_store.add(cert.expect("parse")).expect("add");
         }
-        let client_cfg = rustls::ClientConfig::builder().with_root_certificates(root_store).with_no_client_auth();
+        let client_cfg = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
         let connector = TlsConnector::from(Arc::new(client_cfg));
         let server_name = ServerName::try_from("127.0.0.1").expect("sn");
-        let mut tls = connector.connect(server_name, stream).await.expect("TLS handshake");
+        let mut tls = connector
+            .connect(server_name, stream)
+            .await
+            .expect("TLS handshake");
 
         tls.write_all(payload).await.expect("write payload");
         tls.shutdown().await.ok();
@@ -747,24 +920,35 @@ mod tests {
             }
 
             let server_key = rcgen::KeyPair::generate().expect("key");
-            let mut server_params = rcgen::CertificateParams::new(vec!["127.0.0.1".into()]).expect("san");
+            let mut server_params =
+                rcgen::CertificateParams::new(vec!["127.0.0.1".into()]).expect("san");
             let mut dn = rcgen::DistinguishedName::new();
             dn.push(rcgen::DnType::CommonName, "127.0.0.1");
             server_params.distinguished_name = dn;
             server_params.not_before = time::OffsetDateTime::now_utc() - time::Duration::hours(1);
             server_params.not_after = time::OffsetDateTime::now_utc() + time::Duration::days(1);
             let ca_key = rcgen::KeyPair::from_pem(ca.key_pem()).expect("ca key");
-            let issuer_params = rcgen::CertificateParams::from_ca_cert_pem(ca.cert_pem()).expect("ca params");
+            let issuer_params =
+                rcgen::CertificateParams::from_ca_cert_pem(ca.cert_pem()).expect("ca params");
             let issuer_cert = issuer_params.self_signed(&ca_key).expect("ca cert");
-            let server_cert = server_params.signed_by(&server_key, &issuer_cert, &ca_key).expect("server cert");
+            let server_cert = server_params
+                .signed_by(&server_key, &issuer_cert, &ca_key)
+                .expect("server cert");
 
             let server_cfg = rustls::ServerConfig::builder()
                 .with_no_client_auth()
-                .with_single_cert(vec![server_cert.der().clone()], rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(server_key.serialize_der())))
+                .with_single_cert(
+                    vec![server_cert.der().clone()],
+                    rustls::pki_types::PrivateKeyDer::Pkcs8(
+                        rustls::pki_types::PrivatePkcs8KeyDer::from(server_key.serialize_der()),
+                    ),
+                )
                 .expect("server config");
             let acceptor: TlsAcceptor = TlsAcceptor::from(Arc::new(server_cfg));
 
-            let tcp_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            let tcp_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind");
             let server_addr = tcp_listener.local_addr().expect("addr");
             let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
             tokio::spawn(async move {
@@ -785,17 +969,30 @@ mod tests {
                 }
             });
 
-            let proxy = DlpProxy::new(patterns, DlpAction::Alert).with_events(event_tx).with_tls(issuer).with_upstream_root_store(root_store);
-            let handle = proxy.start(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).await.expect("proxy");
+            let proxy = DlpProxy::new(patterns, DlpAction::Alert)
+                .with_events(event_tx)
+                .with_tls(issuer)
+                .with_upstream_root_store(root_store);
+            let handle = proxy
+                .start(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+                .await
+                .expect("proxy");
             (handle, server_addr, shutdown_tx)
         };
 
-        let payload = b"Authorization: Bearer sk-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMN\r\n";
-        let _echo_response = mitm_client_send(handle.local_addr(), server_addr, &ca_pem, payload).await;
+        let payload =
+            b"Authorization: Bearer sk-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMN\r\n";
+        let _echo_response =
+            mitm_client_send(handle.local_addr(), server_addr, &ca_pem, payload).await;
 
-        let event = tokio::time::timeout(Duration::from_secs(5), event_rx.recv()).await.expect("timeout waiting for DLP event").expect("event channel closed");
+        let event = tokio::time::timeout(Duration::from_secs(5), event_rx.recv())
+            .await
+            .expect("timeout waiting for DLP event")
+            .expect("event channel closed");
         match event {
-            SecurityEvent::DlpViolation { pattern_name, .. } => { assert_eq!(pattern_name, "OpenAI API Key"); }
+            SecurityEvent::DlpViolation { pattern_name, .. } => {
+                assert_eq!(pattern_name, "OpenAI API Key");
+            }
             other => panic!("unexpected event: {other:?}"),
         }
 
@@ -823,7 +1020,11 @@ mod tests {
         let payload: &[u8] = b"leak: sk-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMN";
         let echo = mitm_client_send(handle.local_addr(), server_addr, &ca_pem, payload).await;
 
-        assert!(echo.len() < payload.len(), "block should have prevented full echo, got {} bytes", echo.len());
+        assert!(
+            echo.len() < payload.len(),
+            "block should have prevented full echo, got {} bytes",
+            echo.len()
+        );
 
         handle.shutdown();
         let _ = server_shutdown.send(());
@@ -834,13 +1035,27 @@ mod tests {
         let patterns = compile_defaults().expect("defaults");
         let (tx, mut rx) = mpsc::channel(8);
         let proxy = DlpProxy::new(patterns, DlpAction::Alert).with_events(tx);
-        let handle = proxy.start(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).await.expect("start");
-        let (code, _) = send_through_proxy(handle.local_addr(), "POST", "http://127.0.0.1:1/thing", "leak: sk-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMN").await;
+        let handle = proxy
+            .start(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+            .await
+            .expect("start");
+        let (code, _) = send_through_proxy(
+            handle.local_addr(),
+            "POST",
+            "http://127.0.0.1:1/thing",
+            "leak: sk-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMN",
+        )
+        .await;
         assert_ne!(code, StatusCode::FORBIDDEN);
 
-        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await.expect("no event received").expect("channel closed");
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .expect("no event received")
+            .expect("channel closed");
         match event {
-            SecurityEvent::DlpViolation { pattern_name, .. } => { assert_eq!(pattern_name, "OpenAI API Key"); }
+            SecurityEvent::DlpViolation { pattern_name, .. } => {
+                assert_eq!(pattern_name, "OpenAI API Key");
+            }
             other => panic!("wrong event: {other:?}"),
         }
         handle.shutdown();

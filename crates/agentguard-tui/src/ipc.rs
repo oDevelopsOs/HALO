@@ -20,13 +20,12 @@ impl IpcClient {
     }
 
     fn connect(&self) -> Result<std::os::unix::net::UnixStream, anyhow::Error> {
-        std::os::unix::net::UnixStream::connect(&self.socket_path)
-            .with_context(|| {
-                format!(
-                    "cannot connect to daemon at {}. Is agentguard running?",
-                    self.socket_path.display()
-                )
-            })
+        std::os::unix::net::UnixStream::connect(&self.socket_path).with_context(|| {
+            format!(
+                "cannot connect to daemon at {}. Is agentguard running?",
+                self.socket_path.display()
+            )
+        })
     }
 
     pub fn send(&self, cmd: IpcCommand) -> Result<IpcResponse, anyhow::Error> {
@@ -38,8 +37,7 @@ impl IpcClient {
         let mut reader = BufReader::new(&mut stream);
         let mut line = String::new();
         reader.read_line(&mut line)?;
-        serde_json::from_str(line.trim())
-            .with_context(|| format!("invalid response: {line}"))
+        serde_json::from_str(line.trim()).with_context(|| format!("invalid response: {line}"))
     }
 
     // ── Convenience methods ──────────────────────────────────────────────
@@ -49,9 +47,7 @@ impl IpcClient {
     }
 
     pub fn incidents(&self, last: usize) -> Result<Vec<String>, anyhow::Error> {
-        match self.send(IpcCommand::Incidents {
-            last: Some(last),
-        })? {
+        match self.send(IpcCommand::Incidents { last: Some(last) })? {
             IpcResponse::Incidents { lines } => Ok(lines),
             IpcResponse::Error { message } => anyhow::bail!("daemon error: {message}"),
             other => anyhow::bail!("unexpected response: {other:?}"),

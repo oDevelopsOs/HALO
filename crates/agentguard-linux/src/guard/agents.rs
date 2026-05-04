@@ -102,9 +102,7 @@ impl AgentScanner {
             );
 
             let _ = tx.blocking_send(SecurityEvent::SystemError {
-                message: format!(
-                    "AI agent detected: {exe_name} (pid {pid})"
-                ),
+                message: format!("AI agent detected: {exe_name} (pid {pid})"),
                 timestamp: unix_ts(),
             });
         }
@@ -123,12 +121,12 @@ impl AgentScanner {
 
 /// Escanea procesos en bucle periódico. Diseñado para ejecutarse como
 /// tarea tokio dedicada.
-pub async fn scan_loop(
-    patterns: Vec<AgentProcess>,
-    tx: mpsc::Sender<SecurityEvent>,
-) {
+pub async fn scan_loop(patterns: Vec<AgentProcess>, tx: mpsc::Sender<SecurityEvent>) {
     let mut scanner = AgentScanner::new(patterns);
-    info!("agent process scanner started (/proc scan, {}s interval)", SCAN_INTERVAL_MS / 1000);
+    info!(
+        "agent process scanner started (/proc scan, {}s interval)",
+        SCAN_INTERVAL_MS / 1000
+    );
 
     loop {
         scanner.scan(&tx);
@@ -223,17 +221,17 @@ fn read_status_name(pid: u32) -> Option<String> {
 /// Si NO hay match de nombre, argv por sí solo puede activar la detección.
 fn matches_agent(patterns: &[AgentProcess], exe_name: &str, cmdline: &Option<String>) -> bool {
     let lower_exe = exe_name.to_lowercase();
-    let lower_cmd = cmdline
-        .as_deref()
-        .unwrap_or("")
-        .to_lowercase();
+    let lower_cmd = cmdline.as_deref().unwrap_or("").to_lowercase();
 
     patterns.iter().any(|p| {
         let name_lower = p.name.to_lowercase();
 
         // Match por nombre del ejecutable
         let name_match = lower_exe.contains(&name_lower)
-            || p.r#match.exe_any.iter().any(|e| lower_exe.contains(&e.to_lowercase()));
+            || p.r#match
+                .exe_any
+                .iter()
+                .any(|e| lower_exe.contains(&e.to_lowercase()));
 
         if name_match {
             // Si hay filtros argv, validarlos también
@@ -275,8 +273,14 @@ mod tests {
     #[test]
     fn matches_by_name() {
         let patterns = vec![
-            AgentProcess { name: "claude".into(), r#match: Default::default() },
-            AgentProcess { name: "cursor".into(), r#match: Default::default() },
+            AgentProcess {
+                name: "claude".into(),
+                r#match: Default::default(),
+            },
+            AgentProcess {
+                name: "cursor".into(),
+                r#match: Default::default(),
+            },
         ];
         assert!(matches_agent(&patterns, "claude", &None));
         assert!(matches_agent(&patterns, "claude-code", &None));
@@ -423,15 +427,27 @@ mod tests {
     #[test]
     fn default_patterns_match_common_agents() {
         let patterns = vec![
-            AgentProcess { name: "claude".into(), r#match: Default::default() },
-            AgentProcess { name: "cursor".into(), r#match: Default::default() },
-            AgentProcess { name: "copilot".into(), r#match: Default::default() },
-            AgentProcess { name: "code".into(), r#match: AgentMatch {
-                exe: None,
-                exe_any: vec!["codium".into()],
-                argv_contains_any: vec![],
-                env_has: None,
-            }},
+            AgentProcess {
+                name: "claude".into(),
+                r#match: Default::default(),
+            },
+            AgentProcess {
+                name: "cursor".into(),
+                r#match: Default::default(),
+            },
+            AgentProcess {
+                name: "copilot".into(),
+                r#match: Default::default(),
+            },
+            AgentProcess {
+                name: "code".into(),
+                r#match: AgentMatch {
+                    exe: None,
+                    exe_any: vec!["codium".into()],
+                    argv_contains_any: vec![],
+                    env_has: None,
+                },
+            },
         ];
 
         assert!(matches_agent(&patterns, "claude-code", &None));

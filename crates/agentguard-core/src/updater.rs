@@ -140,8 +140,7 @@ impl Updater {
 
         // Verify SHA256 if available
         if let Some(ref expected) = expected_sha {
-            let expected = expected.split_whitespace().next()
-                .unwrap_or(expected);
+            let expected = expected.split_whitespace().next().unwrap_or(expected);
             let got = sha256_hex(&data);
             if !got.eq_ignore_ascii_case(expected) {
                 return Err(UpdateError::Checksum {
@@ -241,13 +240,18 @@ fn extract_tar_gz(data: &[u8], bin_name: &str) -> Result<Vec<u8>, UpdateError> {
     let decoder = flate2::read::GzDecoder::new(data);
     let mut archive = tar::Archive::new(decoder);
 
-    for entry in archive.entries().map_err(|e| UpdateError::Http(e.to_string()))? {
+    for entry in archive
+        .entries()
+        .map_err(|e| UpdateError::Http(e.to_string()))?
+    {
         let mut entry = entry.map_err(|e| UpdateError::Http(e.to_string()))?;
         let path = entry.path().map_err(|e| UpdateError::Http(e.to_string()))?;
 
         if path.file_name().and_then(|n| n.to_str()) == Some(bin_name) {
             let mut buf = Vec::new();
-            entry.read_to_end(&mut buf).map_err(|e| UpdateError::Http(e.to_string()))?;
+            entry
+                .read_to_end(&mut buf)
+                .map_err(|e| UpdateError::Http(e.to_string()))?;
             return Ok(buf);
         }
     }
@@ -255,11 +259,16 @@ fn extract_tar_gz(data: &[u8], bin_name: &str) -> Result<Vec<u8>, UpdateError> {
     // If bin_name not found, try the first regular file
     let decoder2 = flate2::read::GzDecoder::new(data);
     let mut archive2 = tar::Archive::new(decoder2);
-    for entry in archive2.entries().map_err(|e| UpdateError::Http(e.to_string()))? {
+    for entry in archive2
+        .entries()
+        .map_err(|e| UpdateError::Http(e.to_string()))?
+    {
         let mut entry = entry.map_err(|e| UpdateError::Http(e.to_string()))?;
         if entry.header().entry_type() == tar::EntryType::Regular {
             let mut buf = Vec::new();
-            entry.read_to_end(&mut buf).map_err(|e| UpdateError::Http(e.to_string()))?;
+            entry
+                .read_to_end(&mut buf)
+                .map_err(|e| UpdateError::Http(e.to_string()))?;
             return Ok(buf);
         }
     }
@@ -300,8 +309,12 @@ fn is_newer(latest: &str, current: &str) -> bool {
     for i in 0..l_parts.len().max(c_parts.len()) {
         let l = l_parts.get(i).copied().unwrap_or(0);
         let c = c_parts.get(i).copied().unwrap_or(0);
-        if l > c { return true; }
-        if l < c { return false; }
+        if l > c {
+            return true;
+        }
+        if l < c {
+            return false;
+        }
     }
     false
 }

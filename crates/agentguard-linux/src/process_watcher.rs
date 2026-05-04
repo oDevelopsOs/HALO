@@ -46,11 +46,10 @@ impl ProcessWatcher {
         program.attach("sched", "sched_process_exec")?;
 
         // Poblar KNOWN_AGENTS con los hashes FNV-1a de los nombres de ejecutables
-        let mut known_agents: aya::maps::HashMap<_, u64, u8> =
-            aya::maps::HashMap::try_from(
-                bpf.map_mut("KNOWN_AGENTS")
-                    .ok_or_else(|| anyhow::anyhow!("BPF map 'KNOWN_AGENTS' not found"))?,
-            )?;
+        let mut known_agents: aya::maps::HashMap<_, u64, u8> = aya::maps::HashMap::try_from(
+            bpf.map_mut("KNOWN_AGENTS")
+                .ok_or_else(|| anyhow::anyhow!("BPF map 'KNOWN_AGENTS' not found"))?,
+        )?;
 
         let mut count = 0usize;
         for agent in &config.agent_detection.known_agents {
@@ -77,11 +76,7 @@ impl ProcessWatcher {
 
     /// Loop principal: lee eventos del ring buffer y los procesa.
     /// Spawneado como tarea tokio separada.
-    pub async fn run(
-        mut self,
-        config: Arc<RwLock<Config>>,
-        event_tx: mpsc::Sender<SecurityEvent>,
-    ) {
+    pub async fn run(mut self, config: Arc<RwLock<Config>>, event_tx: mpsc::Sender<SecurityEvent>) {
         let mut ring_buf = match self.bpf.map_mut("AGENT_SPAWN_EVENTS") {
             Some(map) => match aya::maps::RingBuf::try_from(map) {
                 Ok(rb) => rb,
@@ -103,9 +98,8 @@ impl ProcessWatcher {
                 if item.len() < core::mem::size_of::<AgentSpawnEvent>() {
                     continue;
                 }
-                let event: AgentSpawnEvent = unsafe {
-                    core::ptr::read_unaligned(item.as_ptr() as *const AgentSpawnEvent)
-                };
+                let event: AgentSpawnEvent =
+                    unsafe { core::ptr::read_unaligned(item.as_ptr() as *const AgentSpawnEvent) };
 
                 let pid = event.pid;
                 let comm = event.comm_str().to_owned();

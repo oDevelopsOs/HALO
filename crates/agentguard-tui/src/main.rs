@@ -122,7 +122,11 @@ fn run_loop<B: Backend>(
                         }
                         KeyCode::Left => {
                             let idx = state.current_tab.clone() as usize;
-                            let prev = if idx == 0 { Tab::all().len() - 1 } else { idx - 1 };
+                            let prev = if idx == 0 {
+                                Tab::all().len() - 1
+                            } else {
+                                idx - 1
+                            };
                             state.current_tab = Tab::all()[prev].clone();
                         }
                         _ => {}
@@ -143,7 +147,7 @@ fn render_frame(f: &mut Frame, state: &AppState) {
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),  // tabs
+            Constraint::Length(1), // tabs
             Constraint::Min(1),    // content
             Constraint::Length(1), // status bar
         ])

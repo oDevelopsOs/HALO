@@ -33,7 +33,7 @@ static AGENT_SPAWN_EVENTS: RingBuf = RingBuf::with_byte_size(512 * 1024, 0);
 
 // ── Tracepoint handler ───────────────────────────────────────────────────────
 
-#[tracepoint(name = "sched/sched_process_exec")]
+#[tracepoint(category = "sched", name = "sched_process_exec")]
 pub fn handle_process_exec(ctx: TracePointContext) -> i32 {
     match try_handle_exec(&ctx) {
         Ok(_) => 0,
@@ -42,12 +42,10 @@ pub fn handle_process_exec(ctx: TracePointContext) -> i32 {
 }
 
 fn try_handle_exec(ctx: &TracePointContext) -> Result<(), i64> {
-    // Leer comm (nombre del proceso, máx 16 bytes)
-    let mut comm = [0u8; 16];
-    match bpf_get_current_comm() {
-        Ok(c) => comm = c,
+    let comm = match bpf_get_current_comm() {
+        Ok(c) => c,
         Err(_) => return Ok(()),
-    }
+    };
 
     // Hash FNV-1a del comm para búsqueda O(1) en el mapa
     let hash = fnv1a_hash_bytes(&comm);

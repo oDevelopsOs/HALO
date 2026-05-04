@@ -5,12 +5,11 @@
 //!
 //! Requiere: kernel >= 5.13, crate `landlock` 0.4.
 
-use std::path::Path;
 use landlock::{
-    Access, AccessFs, Ruleset,
-    RulesetStatus, RulesetAttr, RulesetCreatedAttr, ABI,
-    path_beneath_rules,
+    path_beneath_rules, Access, AccessFs, Ruleset, RulesetAttr, RulesetCreatedAttr, RulesetStatus,
+    ABI,
 };
+use std::path::Path;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -29,10 +28,7 @@ pub enum LandlockError {
 /// - `rw_paths`: directorios con acceso lectura/escritura
 /// - `ro_paths`: directorios con acceso solo lectura
 /// - Todo lo demás: DENEGADO
-pub fn apply_landlock_profile(
-    rw_paths: &[&Path],
-    ro_paths: &[&Path],
-) -> Result<(), LandlockError> {
+pub fn apply_landlock_profile(rw_paths: &[&Path], ro_paths: &[&Path]) -> Result<(), LandlockError> {
     let abi = ABI::V3;
 
     let all_access = AccessFs::from_all(abi);
@@ -44,8 +40,8 @@ pub fn apply_landlock_profile(
 
     // Añadir reglas rw y ro usando path_beneath_rules (conservando Result items)
     let ro_access = AccessFs::from_read(abi);
-    let all_rules = path_beneath_rules(rw_paths, all_access)
-        .chain(path_beneath_rules(ro_paths, ro_access));
+    let all_rules =
+        path_beneath_rules(rw_paths, all_access).chain(path_beneath_rules(ro_paths, ro_access));
 
     let ruleset = ruleset
         .add_rules(all_rules)

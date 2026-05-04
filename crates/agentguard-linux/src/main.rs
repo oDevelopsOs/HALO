@@ -142,12 +142,14 @@ async fn main() -> Result<()> {
     } else {
         config.vault.vault_dir.clone()
     };
-    let vault = Vault::with_dir(&vault_dir)
-        .with_context(|| format!("vault at {vault_dir:?}"))?;
+    let vault = Vault::with_dir(&vault_dir).with_context(|| format!("vault at {vault_dir:?}"))?;
     info!(path = ?vault.root(), "vault ready");
 
     if config.vault.snapshot_on_start && !config.protected_dirs.is_empty() {
-        match vault.create_snapshot(&config.protected_dirs, "startup").await {
+        match vault
+            .create_snapshot(&config.protected_dirs, "startup")
+            .await
+        {
             Ok(s) => info!(id = %s.id, files = s.files.len(), "startup snapshot created"),
             Err(e) => warn!(error = %e, "startup snapshot failed"),
         }
@@ -155,10 +157,9 @@ async fn main() -> Result<()> {
 
     // ── CA (HTTPS MITM) ─────────────────────────────────────
     let ca_dir = default_ca_dir();
-    let ca = LocalCa::load_or_generate(&ca_dir)
-        .with_context(|| format!("CA at {ca_dir:?}"))?;
-    let leaf_issuer = LeafIssuer::new(&ca)
-        .with_context(|| "failed to initialize TLS leaf certificate issuer")?;
+    let ca = LocalCa::load_or_generate(&ca_dir).with_context(|| format!("CA at {ca_dir:?}"))?;
+    let leaf_issuer =
+        LeafIssuer::new(&ca).with_context(|| "failed to initialize TLS leaf certificate issuer")?;
     info!(
         cert_path = ?ca.cert_path(),
         "CA root ready — HTTPS MITM enabled for DLP proxy"
@@ -176,8 +177,7 @@ async fn main() -> Result<()> {
     if effective_mode != config.sandbox.modo_por_defecto {
         warn!(
             "requested mode '{}' not available, using '{}'",
-            config.sandbox.modo_por_defecto,
-            effective_mode
+            config.sandbox.modo_por_defecto, effective_mode
         );
         if !sandbox_caps.bwrap_available {
             warn!("to enable sandbox mode: sudo apt install bubblewrap");
@@ -208,8 +208,14 @@ async fn main() -> Result<()> {
     let agent_patterns = config.agent_processes.clone();
     if !agent_patterns.is_empty() {
         let scan_tx = event_tx.clone();
-        tokio::spawn(agentguard_linux::guard::agents::scan_loop(agent_patterns, scan_tx));
-        info!(count = config.agent_processes.len(), "agent process scanner started");
+        tokio::spawn(agentguard_linux::guard::agents::scan_loop(
+            agent_patterns,
+            scan_tx,
+        ));
+        info!(
+            count = config.agent_processes.len(),
+            "agent process scanner started"
+        );
     } else {
         info!("no agent process patterns configured — scanner disabled");
     }
@@ -217,9 +223,7 @@ async fn main() -> Result<()> {
     // ── v2.1: Process watcher (eBPF tracepoint) ─────────────
     #[cfg(feature = "ebpf")]
     {
-        if !config.agent_detection.known_agents.is_empty()
-            && config.sandbox.auto_detectar_agentes
-        {
+        if !config.agent_detection.known_agents.is_empty() && config.sandbox.auto_detectar_agentes {
             let watcher_config = config.clone();
             let watcher_tx = event_tx.clone();
             let watcher_cfg = Arc::new(tokio::sync::RwLock::new(watcher_config));
@@ -254,8 +258,7 @@ async fn main() -> Result<()> {
         match compile_all(&custom) {
             Ok(patterns) => {
                 let action = config.dlp_action()?;
-                let addr =
-                    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), config.dlp.proxy_port);
+                let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), config.dlp.proxy_port);
                 let proxy = DlpProxy::new(patterns, action)
                     .with_events(event_tx.clone())
                     .with_tls(leaf_issuer.clone());
@@ -285,8 +288,7 @@ async fn main() -> Result<()> {
     let paused = Arc::new(AtomicBool::new(false));
 
     // v2.1: shared state for sandbox tracking and incident counting
-    let active_sandboxes: Arc<RwLock<Vec<SandboxedAgent>>> =
-        Arc::new(RwLock::new(Vec::new()));
+    let active_sandboxes: Arc<RwLock<Vec<SandboxedAgent>>> = Arc::new(RwLock::new(Vec::new()));
     let incidents_counter = Arc::new(AtomicU64::new(0));
 
     let ipc_server = IpcServer::builder(
@@ -301,23 +303,19 @@ async fn main() -> Result<()> {
     .capabilities(sandbox_caps.report())
     .active_sandboxes(active_sandboxes.clone())
     .incidents_count(incidents_counter.clone())
-    .launch_agent_fn(Arc::new(
-        {
-            let cfg = config.clone();
-            move |exe, cwd, _extra_args, mode_override| {
-                let cfg = cfg.clone();
-                let mode = mode_override
-                    .unwrap_or_else(|| cfg.sandbox.modo_por_defecto.clone());
-                let use_landlock = mode == "hybrid";
-                let project_dir = PathBuf::from(cwd);
-                let launcher = agentguard_linux::sandbox::SandboxLauncher::new(cfg);
-                let rt = tokio::runtime::Runtime::new()
-                    .map_err(|e| format!("tokio: {e}"))?;
-                rt.block_on(launcher.launch(&exe, &project_dir, use_landlock))
-                    .map_err(|e| format!("sandbox: {e}"))
-            }
-        },
-    ))
+    .launch_agent_fn(Arc::new({
+        let cfg = config.clone();
+        move |exe, cwd, _extra_args, mode_override| {
+            let cfg = cfg.clone();
+            let mode = mode_override.unwrap_or_else(|| cfg.sandbox.modo_por_defecto.clone());
+            let use_landlock = mode == "hybrid";
+            let project_dir = PathBuf::from(cwd);
+            let launcher = agentguard_linux::sandbox::SandboxLauncher::new(cfg);
+            let rt = tokio::runtime::Runtime::new().map_err(|e| format!("tokio: {e}"))?;
+            rt.block_on(launcher.launch(&exe, &project_dir, use_landlock))
+                .map_err(|e| format!("sandbox: {e}"))
+        }
+    }))
     .build()
     .with_context(|| "failed to create IPC server")?;
     let ipc_socket_path = default_ipc_socket_path();
@@ -346,7 +344,8 @@ async fn main() -> Result<()> {
 
     info!("entering main loop (SIGTERM / ctrl-c to quit)");
 
-    let mut sigterm = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+    let mut sigterm = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+    {
         Ok(s) => s,
         Err(e) => {
             error!(error = %e, "failed to register SIGTERM handler");
@@ -454,10 +453,7 @@ async fn handle_event(
             );
 
             if snapshot_on_violation && !protected_paths.is_empty() {
-                match vault
-                    .create_snapshot(protected_paths, "on-violation")
-                    .await
-                {
+                match vault.create_snapshot(protected_paths, "on-violation").await {
                     Ok(s) => info!(id = %s.id, "reactive snapshot created"),
                     Err(e) => error!(error = %e, "reactive snapshot failed"),
                 }
@@ -526,15 +522,16 @@ async fn handle_event(
                     started_at: *timestamp,
                 });
                 // Limpiar sandboxes cuyos procesos ya murieron
-                sandboxes.retain(|s| {
-                    unsafe { libc::kill(s.sandbox_pid as i32, 0) == 0 }
-                });
+                sandboxes.retain(|s| unsafe { libc::kill(s.sandbox_pid as i32, 0) == 0 });
             }
 
             if alerts_enabled {
                 send_desktop_notification(
                     &format!("AgentGuard: {agent_name} sandboxed"),
-                    &format!("'{agent_name}' is now running in a sandbox inside {:?}", cwd),
+                    &format!(
+                        "'{agent_name}' is now running in a sandbox inside {:?}",
+                        cwd
+                    ),
                 );
             }
         }

@@ -54,10 +54,7 @@ impl std::fmt::Debug for MacOsGuard {
 
 impl MacOsGuard {
     #[cfg(target_os = "macos")]
-    pub fn new(
-        paths: &[PathBuf],
-        agent_patterns: Vec<AgentProcess>,
-    ) -> Result<Self, GuardError> {
+    pub fn new(paths: &[PathBuf], agent_patterns: Vec<AgentProcess>) -> Result<Self, GuardError> {
         let mut canonical = HashSet::new();
         for p in paths {
             match canonicalize(p) {
@@ -86,10 +83,7 @@ impl MacOsGuard {
     }
 
     #[cfg(not(target_os = "macos"))]
-    pub fn new(
-        _paths: &[PathBuf],
-        agent_patterns: Vec<AgentProcess>,
-    ) -> Result<Self, GuardError> {
+    pub fn new(_paths: &[PathBuf], agent_patterns: Vec<AgentProcess>) -> Result<Self, GuardError> {
         warn!("MacOsGuard is a stub on this platform — no protection available");
         Ok(Self {
             protected_paths: HashSet::new(),
@@ -150,10 +144,7 @@ impl KernelGuard for MacOsGuard {
         }
     }
 
-    async fn run(
-        mut self: Box<Self>,
-        tx: mpsc::Sender<SecurityEvent>,
-    ) -> Result<(), GuardError> {
+    async fn run(mut self: Box<Self>, tx: mpsc::Sender<SecurityEvent>) -> Result<(), GuardError> {
         #[cfg(target_os = "macos")]
         {
             let paths = std::mem::take(&mut self.protected_paths);
@@ -272,7 +263,10 @@ fn scan_and_detect_agents(
     loop {
         pids.resize(buffer_size, 0);
         let count = unsafe {
-            libc::proc_listallpids(pids.as_mut_ptr() as *mut _, (buffer_size * std::mem::size_of::<libc::pid_t>()) as i32)
+            libc::proc_listallpids(
+                pids.as_mut_ptr() as *mut _,
+                (buffer_size * std::mem::size_of::<libc::pid_t>()) as i32,
+            )
         };
         if count < 0 {
             warn!("proc_listallpids failed");
@@ -294,11 +288,7 @@ fn scan_and_detect_agents(
 
         let mut path_buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
         let path_len = unsafe {
-            libc::proc_pidpath(
-                pid,
-                path_buf.as_mut_ptr() as *mut _,
-                path_buf.len() as u32,
-            )
+            libc::proc_pidpath(pid, path_buf.as_mut_ptr() as *mut _, path_buf.len() as u32)
         };
         if path_len <= 0 {
             continue;
@@ -342,7 +332,10 @@ fn matches_agent(patterns: &[AgentProcess], exe_name: &str) -> bool {
     patterns.iter().any(|p| {
         let name_lower = p.name.to_lowercase();
         lower.contains(&name_lower)
-            || p.r#match.exe_any.iter().any(|e| lower.contains(&e.to_lowercase()))
+            || p.r#match
+                .exe_any
+                .iter()
+                .any(|e| lower.contains(&e.to_lowercase()))
     })
 }
 
@@ -396,7 +389,6 @@ fn unix_ts() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[test]
     fn backend_name_is_macos() {
@@ -407,13 +399,24 @@ mod tests {
     #[test]
     fn protection_level_is_userspace() {
         let guard = MacOsGuard::new(&[], vec![]).expect("new");
-        assert_eq!(guard.protection_level(), ProtectionLevel::UserspaceObservation);
+        assert_eq!(
+            guard.protection_level(),
+            ProtectionLevel::UserspaceObservation
+        );
     }
 
     #[test]
     fn matches_common_ai_agents() {
-        let _patterns = [AgentProcess { name: "cursor".into(), r#match: Default::default() },
-            AgentProcess { name: "claude".into(), r#match: Default::default() }];
+        let _patterns = [
+            AgentProcess {
+                name: "cursor".into(),
+                r#match: Default::default(),
+            },
+            AgentProcess {
+                name: "claude".into(),
+                r#match: Default::default(),
+            },
+        ];
 
         #[cfg(target_os = "macos")]
         {

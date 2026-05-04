@@ -135,9 +135,17 @@ fn detect() -> Target {
             Platform::MacOs => "apple",
             Platform::Windows => "pc-windows",
         },
-        if matches!(platform, Platform::MacOs) { "darwin" } else { "gnu" }
+        if matches!(platform, Platform::MacOs) {
+            "darwin"
+        } else {
+            "gnu"
+        }
     );
-    Target { platform, arch: arch.to_string(), triple }
+    Target {
+        platform,
+        arch: arch.to_string(),
+        triple,
+    }
 }
 
 // ── HTTP client (no deps: uses Command curl) ───────────────
@@ -158,20 +166,26 @@ fn download(url: &str) -> Result<Vec<u8>> {
 
 fn install_linux(target: &Target, version: &str) -> Result<()> {
     let bin_dir = "/usr/local/bin";
-    let tag = if version == "latest" { "latest/download" } else { &format!("download/{version}") };
+    let tag = if version == "latest" {
+        "latest/download"
+    } else {
+        &format!("download/{version}")
+    };
 
     // 1. Download CLI
     let cli_name = format!("agentguard-{triple}", triple = target.triple);
     let cli_url = format!("{GH}/{REPO}/releases/{tag}/{cli_name}");
     println!("  → agentguard CLI...");
-    let cli = download(&cli_url).with_context(|| format!("download agentguard CLI for {}", target.triple))?;
+    let cli = download(&cli_url)
+        .with_context(|| format!("download agentguard CLI for {}", target.triple))?;
     install_bin(bin_dir, "agentguard", &cli)?;
 
     // 2. Download daemon
     let daemon_name = format!("agentguard-linux-{}", target.triple);
     let daemon_url = format!("{GH}/{REPO}/releases/{tag}/{daemon_name}");
     println!("  → agentguard-linux daemon...");
-    let daemon = download(&daemon_url).with_context(|| format!("download agentguard-linux for {}", target.triple))?;
+    let daemon = download(&daemon_url)
+        .with_context(|| format!("download agentguard-linux for {}", target.triple))?;
     install_bin(bin_dir, "agentguard-linux", &daemon)?;
 
     // 3. Config
@@ -184,7 +198,11 @@ fn install_linux(target: &Target, version: &str) -> Result<()> {
     }
 
     // 4. Directories
-    for dir in &["/var/lib/agentguard/vault", "/var/lib/agentguard/ca", "/var/log/agentguard"] {
+    for dir in &[
+        "/var/lib/agentguard/vault",
+        "/var/lib/agentguard/ca",
+        "/var/log/agentguard",
+    ] {
         std::fs::create_dir_all(dir)?;
     }
 
@@ -192,7 +210,9 @@ fn install_linux(target: &Target, version: &str) -> Result<()> {
     println!("  → systemd service...");
     std::fs::write("/etc/systemd/system/agentguard.service", SYSTEMD_UNIT)?;
     Command::new("systemctl").args(["daemon-reload"]).status()?;
-    Command::new("systemctl").args(["enable", "--now", "agentguard"]).status()?;
+    Command::new("systemctl")
+        .args(["enable", "--now", "agentguard"])
+        .status()?;
 
     println!();
     println!("✓ AgentGuard installed on {}", target.platform);
@@ -202,7 +222,9 @@ fn install_linux(target: &Target, version: &str) -> Result<()> {
 }
 
 fn install_macos(_target: &Target, _version: &str) -> Result<()> {
-    println!("  macOS support — Fase 5 (build from source: cargo build -p agentguard-macos --release)");
+    println!(
+        "  macOS support — Fase 5 (build from source: cargo build -p agentguard-macos --release)"
+    );
     Ok(())
 }
 
@@ -214,8 +236,7 @@ fn install_windows(_target: &Target, _version: &str) -> Result<()> {
 
 fn install_bin(dir: &str, name: &str, data: &[u8]) -> Result<()> {
     let path = format!("{dir}/{name}");
-    std::fs::write(&path, data)
-        .with_context(|| format!("write {path}"))?;
+    std::fs::write(&path, data).with_context(|| format!("write {path}"))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

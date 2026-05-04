@@ -36,10 +36,7 @@ fn fmt_size(bytes: u64) -> String {
 
 pub fn render(f: &mut Frame, state: &AppState, area: Rect) {
     let block = Block::default()
-        .title(format!(
-            " Snapshots — {} stored ",
-            state.snapshots.len()
-        ))
+        .title(format!(" Snapshots — {} stored ", state.snapshots.len()))
         .borders(Borders::ALL)
         .border_style(theme::BORDER);
 
@@ -83,8 +80,10 @@ pub fn render(f: &mut Frame, state: &AppState, area: Rect) {
 
     items.push(ListItem::new(""));
     items.push(
-        ListItem::new("  [Enter] Create snapshot  [r] Restore latest  [Backspace] Cleanup old  q Quit")
-            .style(theme::muted_style()),
+        ListItem::new(
+            "  [Enter] Create snapshot  [r] Restore latest  [Backspace] Cleanup old  q Quit",
+        )
+        .style(theme::muted_style()),
     );
 
     let list = List::new(items).block(block);

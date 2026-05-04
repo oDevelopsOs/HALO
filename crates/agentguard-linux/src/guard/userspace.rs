@@ -24,8 +24,12 @@ impl UserspaceGuard {
         let mut canonical = HashSet::new();
         for p in paths {
             match canonicalize(p) {
-                Ok(c) => { canonical.insert(c); }
-                Err(e) => { tracing::warn!(path = ?p, error = %e, "skipping protected path"); }
+                Ok(c) => {
+                    canonical.insert(c);
+                }
+                Err(e) => {
+                    tracing::warn!(path = ?p, error = %e, "skipping protected path");
+                }
             }
         }
         Ok(Self { paths: canonical })
@@ -39,8 +43,12 @@ impl UserspaceGuard {
 
 #[async_trait]
 impl KernelGuard for UserspaceGuard {
-    fn backend_name(&self) -> &'static str { "userspace-notify" }
-    fn protection_level(&self) -> ProtectionLevel { ProtectionLevel::UserspaceObservation }
+    fn backend_name(&self) -> &'static str {
+        "userspace-notify"
+    }
+    fn protection_level(&self) -> ProtectionLevel {
+        ProtectionLevel::UserspaceObservation
+    }
 
     async fn add_protected_path(&mut self, path: &Path) -> Result<(), GuardError> {
         let c = canonicalize(path)?;
@@ -74,15 +82,21 @@ impl KernelGuard for UserspaceGuard {
                 match res {
                     Ok(event) => {
                         for ev in translate(event) {
-                            if out_tx.blocking_send(ev).is_err() { return; }
+                            if out_tx.blocking_send(ev).is_err() {
+                                return;
+                            }
                         }
                     }
-                    Err(e) => { tracing::warn!(error = %e, "notify watcher error"); }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "notify watcher error");
+                    }
                 }
             }
         });
 
-        handle.await.map_err(|e| GuardError::Internal(format!("blocking task join: {e}")))?;
+        handle
+            .await
+            .map_err(|e| GuardError::Internal(format!("blocking task join: {e}")))?;
 
         drop(watcher);
         Ok(())
@@ -91,7 +105,9 @@ impl KernelGuard for UserspaceGuard {
 
 fn translate(ev: Event) -> Vec<SecurityEvent> {
     let kind = match ev.kind {
-        EventKind::Remove(RemoveKind::File) | EventKind::Remove(RemoveKind::Folder) => ViolationKind::DeleteAttempt,
+        EventKind::Remove(RemoveKind::File) | EventKind::Remove(RemoveKind::Folder) => {
+            ViolationKind::DeleteAttempt
+        }
         EventKind::Modify(ModifyKind::Name(_)) => ViolationKind::RenameAttempt,
         EventKind::Modify(ModifyKind::Data(_)) => ViolationKind::WriteAttempt,
         EventKind::Create(_) => ViolationKind::CreateAttempt,
@@ -111,12 +127,18 @@ fn translate(ev: Event) -> Vec<SecurityEvent> {
 }
 
 fn canonicalize(p: &Path) -> Result<PathBuf, GuardError> {
-    std::fs::canonicalize(p).map_err(|source| GuardError::Io { path: p.to_path_buf(), source })
+    std::fs::canonicalize(p).map_err(|source| GuardError::Io {
+        path: p.to_path_buf(),
+        source,
+    })
 }
 
 fn current_timestamp() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -133,7 +155,10 @@ mod tests {
         std::fs::write(&file, b"bye").expect("write");
 
         let guard = Box::new(UserspaceGuard::new(std::slice::from_ref(&zone)).expect("guard"));
-        assert_eq!(guard.protection_level(), ProtectionLevel::UserspaceObservation);
+        assert_eq!(
+            guard.protection_level(),
+            ProtectionLevel::UserspaceObservation
+        );
 
         let (tx, mut rx) = mpsc::channel(32);
         let handle = tokio::spawn(guard.run(tx));
@@ -141,12 +166,22 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
         std::fs::remove_file(&file).expect("remove");
 
-        let ev = timeout(Duration::from_secs(3), rx.recv()).await.expect("timeout waiting for event").expect("channel closed");
+        let ev = timeout(Duration::from_secs(3), rx.recv())
+            .await
+            .expect("timeout waiting for event")
+            .expect("channel closed");
 
         match ev {
-            SecurityEvent::FileViolation { path, violation, .. } => {
+            SecurityEvent::FileViolation {
+                path, violation, ..
+            } => {
                 assert!(path.ends_with("target.txt"));
-                assert!(matches!(violation, ViolationKind::DeleteAttempt | ViolationKind::RenameAttempt | ViolationKind::WriteAttempt));
+                assert!(matches!(
+                    violation,
+                    ViolationKind::DeleteAttempt
+                        | ViolationKind::RenameAttempt
+                        | ViolationKind::WriteAttempt
+                ));
             }
             other => panic!("unexpected event: {other:?}"),
         }
@@ -172,7 +207,8 @@ mod tests {
 
     #[tokio::test]
     async fn ignores_nonexistent_paths_at_construction() {
-        let guard = UserspaceGuard::new(&[PathBuf::from("/definitely/does/not/exist")]).expect("guard");
+        let guard =
+            UserspaceGuard::new(&[PathBuf::from("/definitely/does/not/exist")]).expect("guard");
         assert_eq!(guard.paths().count(), 0);
     }
 }

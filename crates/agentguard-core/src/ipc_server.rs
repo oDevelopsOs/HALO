@@ -19,9 +19,8 @@ use crate::vault::Vault;
 
 /// Tipo de callback para lanzar un agente en sandbox.
 /// Inyectado por el daemon específico de cada plataforma.
-pub type LaunchAgentFn = Arc<
-    dyn Fn(String, String, Vec<String>, Option<String>) -> Result<u32, String> + Send + Sync,
->;
+pub type LaunchAgentFn =
+    Arc<dyn Fn(String, String, Vec<String>, Option<String>) -> Result<u32, String> + Send + Sync>;
 
 /// Máximo de líneas a leer del log de incidentes (evita OOM).
 const INCIDENTS_MAX_LINES: usize = 500;
@@ -33,7 +32,8 @@ fn read_config(cfg: &RwLock<Config>) -> Result<RwLockReadGuard<'_, Config>, Stri
 
 /// Helper: adquiere el lock de escritura del config, manejando poison.
 fn write_config(cfg: &RwLock<Config>) -> Result<RwLockWriteGuard<'_, Config>, String> {
-    cfg.write().map_err(|e| format!("config lock poisoned: {e}"))
+    cfg.write()
+        .map_err(|e| format!("config lock poisoned: {e}"))
 }
 
 /// Estado compartido accesible desde el servidor IPC.
@@ -227,18 +227,28 @@ impl IpcServer {
 
                 let canonical_str = canonical.display().to_string();
                 if watch_only {
-                    if !cfg.protected_files.iter().any(|p| p.display().to_string() == canonical_str) {
+                    if !cfg
+                        .protected_files
+                        .iter()
+                        .any(|p| p.display().to_string() == canonical_str)
+                    {
                         cfg.protected_files.push(canonical.clone());
                     }
                 } else {
-                    if !cfg.protected_dirs.iter().any(|p| p.display().to_string() == canonical_str) {
+                    if !cfg
+                        .protected_dirs
+                        .iter()
+                        .any(|p| p.display().to_string() == canonical_str)
+                    {
                         cfg.protected_dirs.push(canonical.clone());
                     }
                 }
                 drop(cfg);
 
                 IpcResponse::Ok {
-                    message: format!("path {path} added to config\nrestart daemon to persist and apply"),
+                    message: format!(
+                        "path {path} added to config\nrestart daemon to persist and apply"
+                    ),
                 }
             }
 
@@ -247,14 +257,16 @@ impl IpcServer {
                     Ok(c) => c,
                     Err(e) => return IpcResponse::Error { message: e },
                 };
-                let canonical = std::fs::canonicalize(&path)
-                    .unwrap_or_else(|_| PathBuf::from(&path));
+                let canonical =
+                    std::fs::canonicalize(&path).unwrap_or_else(|_| PathBuf::from(&path));
                 let canonical_str = canonical.display().to_string();
 
                 let dirs_before = cfg.protected_dirs.len();
                 let files_before = cfg.protected_files.len();
-                cfg.protected_dirs.retain(|p| p.display().to_string() != canonical_str);
-                cfg.protected_files.retain(|p| p.display().to_string() != canonical_str);
+                cfg.protected_dirs
+                    .retain(|p| p.display().to_string() != canonical_str);
+                cfg.protected_files
+                    .retain(|p| p.display().to_string() != canonical_str);
                 let removed = (dirs_before + files_before)
                     - (cfg.protected_dirs.len() + cfg.protected_files.len());
                 drop(cfg);
@@ -275,9 +287,10 @@ impl IpcServer {
                     Ok(c) => c.protected_dirs.clone(),
                     Err(e) => return IpcResponse::Error { message: e },
                 };
-                match self.runtime.block_on(
-                    self.vault.create_snapshot(&dirs, &label),
-                ) {
+                match self
+                    .runtime
+                    .block_on(self.vault.create_snapshot(&dirs, &label))
+                {
                     Ok(snapshot) => IpcResponse::Ok {
                         message: format!(
                             "snapshot {} created ({} files, {} bytes)",
@@ -292,10 +305,7 @@ impl IpcServer {
                 }
             }
 
-            IpcCommand::SnapshotList => match self
-                .runtime
-                .block_on(self.vault.list())
-            {
+            IpcCommand::SnapshotList => match self.runtime.block_on(self.vault.list()) {
                 Ok(snapshots) => IpcResponse::SnapshotList {
                     snapshots: snapshots
                         .into_iter()
@@ -347,7 +357,9 @@ impl IpcServer {
                     Some(p) => p.clone(),
                     None => {
                         return IpcResponse::Incidents {
-                            lines: vec!["incidents log not configured — run the daemon first".into()],
+                            lines: vec![
+                                "incidents log not configured — run the daemon first".into()
+                            ],
                         };
                     }
                 };
@@ -413,8 +425,7 @@ impl IpcServer {
                     Err(e) => IpcResponse::Error { message: e },
                 },
                 None => IpcResponse::Error {
-                    message: "sandbox launcher not available on this platform"
-                        .to_string(),
+                    message: "sandbox launcher not available on this platform".to_string(),
                 },
             },
 
@@ -548,8 +559,7 @@ impl Drop for IpcShutdown {
 }
 
 fn write_response(stream: &mut impl Write, response: &IpcResponse) -> std::io::Result<()> {
-    let json = serde_json::to_string(response)
-        .map_err(std::io::Error::other)?;
+    let json = serde_json::to_string(response).map_err(std::io::Error::other)?;
     writeln!(stream, "{json}")?;
     stream.flush()?;
     Ok(())
@@ -669,11 +679,7 @@ mod tests {
     fn incidents_respects_last_limit() {
         let tmp = TempDir::new().expect("tmp");
         let log_path = tmp.path().join("incidents.jsonl");
-        std::fs::write(
-            &log_path,
-            "line1\nline2\nline3\nline4\nline5\n",
-        )
-        .expect("write log");
+        std::fs::write(&log_path, "line1\nline2\nline3\nline4\nline5\n").expect("write log");
 
         let config = config::Config::default().resolve().expect("config");
         let vault = Vault::with_dir(tmp.path().join("vault")).expect("vault");
@@ -709,6 +715,9 @@ mod tests {
         });
 
         let cfg = read_config(&server.config).expect("read config");
-        assert!(cfg.protected_dirs.iter().any(|p| p.display().to_string() == path_str));
+        assert!(cfg
+            .protected_dirs
+            .iter()
+            .any(|p| p.display().to_string() == path_str));
     }
 }

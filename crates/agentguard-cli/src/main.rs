@@ -180,8 +180,8 @@ fn build_command(cmd: Command) -> IpcCommand {
             mode_override: mode,
         },
         Command::Check | Command::Setup | Command::Update { .. } | Command::Init { .. } => {
-            unreachable!("build_command called with local-only command")
-        } // unwrap-ok: filtered before IPC
+            unreachable!("build_command called with local-only command") // unwrap-ok: filtered before IPC
+        }
     }
 }
 

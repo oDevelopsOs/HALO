@@ -142,12 +142,12 @@ impl Vault {
 
                 let stored_path = snapshot_dir.join(&hash);
                 if !already_written.contains(&hash) {
-                    fs::write(&stored_path, &content).await.map_err(|source| {
-                        VaultError::Io {
+                    fs::write(&stored_path, &content)
+                        .await
+                        .map_err(|source| VaultError::Io {
                             path: stored_path.clone(),
                             source,
-                        }
-                    })?;
+                        })?;
                     already_written.insert(hash.clone());
                 }
 
@@ -308,10 +308,12 @@ impl Vault {
 }
 
 async fn read_manifest(path: &Path) -> Result<Snapshot, VaultError> {
-    let text = fs::read_to_string(path).await.map_err(|source| VaultError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    let text = fs::read_to_string(path)
+        .await
+        .map_err(|source| VaultError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
     serde_json::from_str(&text).map_err(|source| VaultError::CorruptManifest {
         path: path.to_path_buf(),
         source,
@@ -349,10 +351,14 @@ async fn collect_files(root: &Path) -> Result<Vec<PathBuf>, VaultError> {
             path: dir.clone(),
             source,
         })?;
-        while let Some(entry) = entries.next_entry().await.map_err(|source| VaultError::Io {
-            path: dir.clone(),
-            source,
-        })? {
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|source| VaultError::Io {
+                path: dir.clone(),
+                source,
+            })?
+        {
             let entry_path = entry.path();
             let md = match fs::symlink_metadata(&entry_path).await {
                 Ok(m) => m,
@@ -474,7 +480,10 @@ mod tests {
         write_file(&zone.join("sub/deeper/leaf.md"), b"3");
 
         let vault = Vault::with_dir(tmp.path().join("vault")).unwrap();
-        let snap = vault.create_snapshot(std::slice::from_ref(&zone), "nested").await.unwrap();
+        let snap = vault
+            .create_snapshot(std::slice::from_ref(&zone), "nested")
+            .await
+            .unwrap();
         assert_eq!(snap.files.len(), 3);
         assert_eq!(snap.total_size, 3);
     }
@@ -486,7 +495,10 @@ mod tests {
         write_file(&zone.join("f"), b"x");
         let vault = Vault::with_dir(tmp.path().join("vault")).unwrap();
 
-        let s1 = vault.create_snapshot(std::slice::from_ref(&zone), "first").await.unwrap();
+        let s1 = vault
+            .create_snapshot(std::slice::from_ref(&zone), "first")
+            .await
+            .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
         let s2 = vault.create_snapshot(&[zone], "second").await.unwrap();
 

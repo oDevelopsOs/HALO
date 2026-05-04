@@ -81,14 +81,11 @@ fn init_tracing() {
 fn is_elevated() -> bool {
     #[cfg(windows)]
     {
-        use windows::Win32::System::Threading::{
-            GetCurrentProcess, OpenProcessToken,
-        };
-        use windows::Win32::Security::{
-            GetTokenInformation, TokenElevation, TOKEN_ELEVATION,
-            TOKEN_QUERY,
-        };
         use windows::Win32::Foundation::{CloseHandle, HANDLE};
+        use windows::Win32::Security::{
+            GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+        };
+        use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
         unsafe {
             let mut token: HANDLE = HANDLE::default();
@@ -212,24 +209,27 @@ async fn run_console(args: Args) -> Result<()> {
 
 #[cfg(windows)]
 async fn run_as_service(_args: Args) -> Result<()> {
-    use windows::Win32::System::Services::{
-        StartServiceCtrlDispatcherW, SERVICE_TABLE_ENTRYW,
-    };
+    use windows::Win32::System::Services::{StartServiceCtrlDispatcherW, SERVICE_TABLE_ENTRYW};
 
     let mut service_name: Vec<u16> = "AgentGuard\0".encode_utf16().collect();
 
     unsafe {
-        let table = [SERVICE_TABLE_ENTRYW {
-            lpServiceName: windows::core::PWSTR(service_name.as_mut_ptr()),
-            lpServiceProc: Some(service_main_entry as _),
-        }, SERVICE_TABLE_ENTRYW {
-            lpServiceName: windows::core::PWSTR(std::ptr::null_mut()),
-            lpServiceProc: None,
-        }];
+        let table = [
+            SERVICE_TABLE_ENTRYW {
+                lpServiceName: windows::core::PWSTR(service_name.as_mut_ptr()),
+                lpServiceProc: Some(service_main_entry as _),
+            },
+            SERVICE_TABLE_ENTRYW {
+                lpServiceName: windows::core::PWSTR(std::ptr::null_mut()),
+                lpServiceProc: None,
+            },
+        ];
 
         if StartServiceCtrlDispatcherW(&table).is_err() {
             error!("StartServiceCtrlDispatcherW failed — is the service registered?");
-            anyhow::bail!("StartServiceCtrlDispatcherW failed. Run `sc.exe create AgentGuard ...` first.");
+            anyhow::bail!(
+                "StartServiceCtrlDispatcherW failed. Run `sc.exe create AgentGuard ...` first."
+            );
         }
     }
 
@@ -248,11 +248,12 @@ mod service_globals {
 
     /// Handle del servicio registrado en el SCM.
     /// Solo se escribe una vez al registrarse y se lee desde el control handler.
-    static HANDLE: UnsafeCell<SERVICE_STATUS_HANDLE> =
-        UnsafeCell::new(SERVICE_STATUS_HANDLE(0));
+    static HANDLE: UnsafeCell<SERVICE_STATUS_HANDLE> = UnsafeCell::new(SERVICE_STATUS_HANDLE(0));
 
     pub fn set(h: SERVICE_STATUS_HANDLE) {
-        unsafe { *HANDLE.get() = h; }
+        unsafe {
+            *HANDLE.get() = h;
+        }
     }
 
     pub fn get() -> SERVICE_STATUS_HANDLE {
@@ -262,13 +263,12 @@ mod service_globals {
 
 #[cfg(windows)]
 extern "system" fn service_main_entry(_argc: u32, _argv: *mut *mut u16) {
-    use windows::Win32::System::Services::{
-        RegisterServiceCtrlHandlerExW, SetServiceStatus,
-        SERVICE_STATUS, SERVICE_ACCEPT_STOP,
-        SERVICE_ACCEPT_PAUSE_CONTINUE, SERVICE_RUNNING, SERVICE_STOPPED,
-        SERVICE_START_PENDING,
-    };
     use windows::Win32::Foundation::NO_ERROR;
+    use windows::Win32::System::Services::{
+        RegisterServiceCtrlHandlerExW, SetServiceStatus, SERVICE_ACCEPT_PAUSE_CONTINUE,
+        SERVICE_ACCEPT_STOP, SERVICE_RUNNING, SERVICE_START_PENDING, SERVICE_STATUS,
+        SERVICE_STOPPED,
+    };
 
     let service_name: Vec<u16> = "AgentGuard\0".encode_utf16().collect();
 
@@ -373,12 +373,12 @@ extern "system" fn service_main_entry(_argc: u32, _argv: *mut *mut u16) {
 
 #[cfg(windows)]
 extern "system" fn service_control_handler(control: u32) -> u32 {
-    use windows::Win32::System::Services::{
-        SERVICE_CONTROL_STOP, SERVICE_CONTROL_PAUSE, SERVICE_CONTROL_CONTINUE,
-        SERVICE_CONTROL_INTERROGATE, SERVICE_STOP_PENDING, SERVICE_PAUSED,
-        SERVICE_RUNNING, SERVICE_STATUS,
-    };
     use windows::Win32::Foundation::NO_ERROR;
+    use windows::Win32::System::Services::{
+        SERVICE_CONTROL_CONTINUE, SERVICE_CONTROL_INTERROGATE, SERVICE_CONTROL_PAUSE,
+        SERVICE_CONTROL_STOP, SERVICE_PAUSED, SERVICE_RUNNING, SERVICE_STATUS,
+        SERVICE_STOP_PENDING,
+    };
 
     unsafe {
         match control {
@@ -470,12 +470,14 @@ async fn run_daemon(args: Args, shutdown: Arc<AtomicBool>) -> Result<()> {
     } else {
         config.vault.vault_dir.clone()
     };
-    let vault = Vault::with_dir(&vault_dir)
-        .with_context(|| format!("vault at {vault_dir:?}"))?;
+    let vault = Vault::with_dir(&vault_dir).with_context(|| format!("vault at {vault_dir:?}"))?;
     info!(path = ?vault.root(), "vault ready");
 
     if config.vault.snapshot_on_start && !config.protected_dirs.is_empty() {
-        match vault.create_snapshot(&config.protected_dirs, "startup").await {
+        match vault
+            .create_snapshot(&config.protected_dirs, "startup")
+            .await
+        {
             Ok(s) => info!(id = %s.id, files = s.files.len(), "startup snapshot created"),
             Err(e) => warn!(error = %e, "startup snapshot failed"),
         }
@@ -483,10 +485,9 @@ async fn run_daemon(args: Args, shutdown: Arc<AtomicBool>) -> Result<()> {
 
     // ── CA (HTTPS MITM) ─────────────────────────────────────
     let ca_dir = default_ca_dir();
-    let ca = LocalCa::load_or_generate(&ca_dir)
-        .with_context(|| format!("CA at {ca_dir:?}"))?;
-    let leaf_issuer = LeafIssuer::new(&ca)
-        .with_context(|| "failed to initialize TLS leaf certificate issuer")?;
+    let ca = LocalCa::load_or_generate(&ca_dir).with_context(|| format!("CA at {ca_dir:?}"))?;
+    let leaf_issuer =
+        LeafIssuer::new(&ca).with_context(|| "failed to initialize TLS leaf certificate issuer")?;
     info!(
         cert_path = ?ca.cert_path(),
         "CA root ready — HTTPS MITM enabled for DLP proxy"
@@ -494,10 +495,7 @@ async fn run_daemon(args: Args, shutdown: Arc<AtomicBool>) -> Result<()> {
 
     // ── Guard (NTFS DENY ACEs + Job Objects) ────────────────
     let agent_patterns = config.agent_processes.clone();
-    let guard = guard::WindowsGuard::new(
-        &config.protected_dirs,
-        agent_patterns,
-    )?;
+    let guard = guard::WindowsGuard::new(&config.protected_dirs, agent_patterns)?;
     let guard_backend_name = guard.backend_name().to_string();
     let guard_level = format!("{:?}", guard.protection_level());
     info!(
@@ -527,8 +525,7 @@ async fn run_daemon(args: Args, shutdown: Arc<AtomicBool>) -> Result<()> {
         match compile_all(&custom) {
             Ok(patterns) => {
                 let action = config.dlp_action()?;
-                let addr =
-                    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), config.dlp.proxy_port);
+                let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), config.dlp.proxy_port);
                 let proxy = DlpProxy::new(patterns, action)
                     .with_events(event_tx.clone())
                     .with_tls(leaf_issuer.clone());
@@ -685,10 +682,7 @@ async fn handle_event(
             );
 
             if snapshot_on_violation && !protected_paths.is_empty() {
-                match vault
-                    .create_snapshot(protected_paths, "on-violation")
-                    .await
-                {
+                match vault.create_snapshot(protected_paths, "on-violation").await {
                     Ok(s) => info!(id = %s.id, "reactive snapshot created"),
                     Err(e) => error!(error = %e, "reactive snapshot failed"),
                 }

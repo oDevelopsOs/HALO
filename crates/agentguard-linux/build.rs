@@ -34,13 +34,21 @@ fn embed_ebpf_bytecode() {
             );
         }
         let dst = out_dir.join(format!("{name}.bpf.o"));
-        fs::copy(&src, &dst)
-            .unwrap_or_else(|e| panic!("copy {src:?} → {dst:?}: {e}"));
+        fs::copy(&src, &dst).unwrap_or_else(|e| panic!("copy {src:?} → {dst:?}: {e}"));
     }
 
-    println!("cargo:rerun-if-changed={}", bytecode_dir.join("file_guard").display());
-    println!("cargo:rerun-if-changed={}", bytecode_dir.join("net_guard").display());
-    println!("cargo:rerun-if-changed={}", bytecode_dir.join("process_exec").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        bytecode_dir.join("file_guard").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        bytecode_dir.join("net_guard").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        bytecode_dir.join("process_exec").display()
+    );
     println!("cargo:rerun-if-changed=../../scripts/build-ebpf.sh");
     println!("cargo:rerun-if-changed=../agentguard-ebpf/src/");
 }

@@ -13,10 +13,12 @@ pub mod updater;
 pub mod vault;
 
 pub use ca::{CaError, LocalCa};
-pub use config::{AgentDetection, Config, ConfigError, DlpAction, KnownAgent, SandboxConfig, WindowsConfig};
+pub use config::{
+    AgentDetection, Config, ConfigError, DlpAction, KnownAgent, SandboxConfig, WindowsConfig,
+};
 pub use dlp::DlpProxy;
 pub use events::{SecurityEvent, ViolationKind};
 pub use guard::{GuardError, KernelGuard, ProtectionLevel};
 pub use ipc_server::{IpcServer, IpcServerBuilder, IpcShutdown};
-pub use updater::{Updater, UpdateError};
+pub use updater::{UpdateError, Updater};
 pub use vault::{Snapshot, Vault, VaultError};

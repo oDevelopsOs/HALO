@@ -54,9 +54,7 @@ pub fn render_status_bar(f: &mut Frame, state: &AppState, area: Rect) {
         let paused = if state.daemon.paused { " [PAUSED]" } else { "" };
         format!(
             " AG v{} | {} ({}){paused} | q quit",
-            state.daemon.version,
-            state.daemon.guard_backend,
-            state.daemon.protection_level,
+            state.daemon.version, state.daemon.guard_backend, state.daemon.protection_level,
         )
     } else {
         " Daemon disconnected - retrying...".to_string()
@@ -76,7 +74,9 @@ pub fn render_status_bar(f: &mut Frame, state: &AppState, area: Rect) {
         theme::accent_style()
     };
     f.render_widget(
-        Paragraph::new(right).style(style).alignment(Alignment::Right),
+        Paragraph::new(right)
+            .style(style)
+            .alignment(Alignment::Right),
         chunks[1],
     );
 }
