@@ -53,6 +53,7 @@ fn init_tracing() {
         .init();
 }
 
+#[cfg(unix)]
 fn default_config_path() -> PathBuf {
     use nix::unistd::Uid;
     if Uid::effective().is_root() {
@@ -63,6 +64,7 @@ fn default_config_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("config.toml"))
 }
 
+#[cfg(unix)]
 fn default_vault_dir() -> PathBuf {
     use nix::unistd::Uid;
     if Uid::effective().is_root() {
@@ -73,6 +75,7 @@ fn default_vault_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("vault"))
 }
 
+#[cfg(unix)]
 fn default_ca_dir() -> PathBuf {
     use nix::unistd::Uid;
     if Uid::effective().is_root() {
@@ -83,6 +86,7 @@ fn default_ca_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("ca"))
 }
 
+#[cfg(unix)]
 fn default_ipc_socket_path() -> PathBuf {
     use nix::unistd::Uid;
     if Uid::effective().is_root() {
@@ -93,6 +97,7 @@ fn default_ipc_socket_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("agentguard.sock"))
 }
 
+#[cfg(unix)]
 fn incidents_log_path() -> PathBuf {
     use nix::unistd::Uid;
     if Uid::effective().is_root() {
@@ -103,6 +108,7 @@ fn incidents_log_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("incidents.jsonl"))
 }
 
+#[cfg(unix)]
 #[tokio::main]
 async fn main() -> Result<()> {
     init_tracing();
@@ -399,6 +405,13 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(unix))]
+fn main() {
+    println!("agentguard-linux: this daemon only runs on Linux/macOS.");
+    println!("On this platform, use: agentguard-windows");
+}
+
+#[cfg(unix)]
 async fn persist_incident(log_path: &std::path::Path, event: &SecurityEvent) {
     let entry = match serde_json::to_string(event) {
         Ok(json) => format!("{json}\n"),
@@ -422,6 +435,7 @@ async fn persist_incident(log_path: &std::path::Path, event: &SecurityEvent) {
     }
 }
 
+#[cfg(unix)]
 async fn handle_event(
     vault: &Vault,
     snapshot_on_violation: bool,
@@ -538,6 +552,7 @@ async fn handle_event(
     }
 }
 
+#[cfg(unix)]
 fn send_desktop_notification(summary: &str, body: &str) {
     let result = notify_rust::Notification::new()
         .summary(summary)

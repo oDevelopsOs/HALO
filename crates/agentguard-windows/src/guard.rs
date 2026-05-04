@@ -264,15 +264,19 @@ mod win32 {
     use std::collections::HashMap;
     use std::collections::HashSet;
     use std::ffi::c_void;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
 
     use tokio::sync::mpsc;
     use tracing::{info, warn};
 
-    use agentguard_core::config::{AgentMatch, AgentProcess};
+    use agentguard_core::config::AgentProcess;
+    #[cfg(windows)]
+    use agentguard_core::config::AgentMatch;
     #[cfg(windows)]
     use agentguard_core::ViolationKind;
     use agentguard_core::{GuardError, SecurityEvent};
+
+    #[cfg(windows)]
     use notify::Watcher;
 
     use super::unix_ts;
@@ -304,7 +308,7 @@ mod win32 {
         GetCurrentProcess, GetCurrentProcessId, OpenProcess, OpenProcessToken,
         PROCESS_QUERY_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE, PROCESS_VM_READ,
     };
-    use windows::Win32::System::ToolHelp::{
+    use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
         TH32CS_SNAPPROCESS,
     };
@@ -376,7 +380,8 @@ mod win32 {
             .map_err(|e| GuardError::Internal(format!("get current user SID: {e}")))?;
 
         let mut dacl: *mut ACL = std::ptr::null_mut();
-        let mut sec_desc: *mut c_void = std::ptr::null_mut();
+        let mut sec_desc: windows::Win32::Security::PSECURITY_DESCRIPTOR =
+            windows::Win32::Security::PSECURITY_DESCRIPTOR::default();
 
         let result = unsafe {
             GetNamedSecurityInfoW(
@@ -408,7 +413,7 @@ mod win32 {
         };
 
         let ea = EXPLICIT_ACCESS_W {
-            grfAccessPermissions: DENY_PERMISSIONS,
+            grfAccessPermissions: DENY_PERMISSIONS.0,
             grfAccessMode: DENY_ACCESS,
             grfInheritance: SUB_CONTAINERS_AND_OBJECTS_INHERIT,
             Trustee: trustee,
@@ -485,7 +490,8 @@ mod win32 {
             .map_err(|e| GuardError::Internal(format!("get current user SID: {e}")))?;
 
         let mut dacl: *mut ACL = std::ptr::null_mut();
-        let mut sec_desc: *mut c_void = std::ptr::null_mut();
+        let mut sec_desc: windows::Win32::Security::PSECURITY_DESCRIPTOR =
+            windows::Win32::Security::PSECURITY_DESCRIPTOR::default();
 
         unsafe {
             let result = GetNamedSecurityInfoW(
@@ -521,7 +527,7 @@ mod win32 {
         };
 
         let ea = EXPLICIT_ACCESS_W {
-            grfAccessPermissions: DENY_PERMISSIONS,
+            grfAccessPermissions: DENY_PERMISSIONS.0,
             grfAccessMode: windows::Win32::Security::Authorization::REVOKE_ACCESS,
             grfInheritance: SUB_CONTAINERS_AND_OBJECTS_INHERIT,
             Trustee: trustee,
@@ -735,13 +741,15 @@ mod win32 {
         size: usize,
         out: &mut usize,
     ) -> windows::core::Result<()> {
-        windows::Win32::System::Diagnostics::Debug::ReadProcessMemory(
+        unsafe {
+            windows::Win32::System::Diagnostics::Debug::ReadProcessMemory(
             process,
             base,
             buf,
             size,
             Some(out),
         )
+        }
     }
 
     // ── Agent detection ────────────────────────────────────

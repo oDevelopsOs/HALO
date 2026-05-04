@@ -13,10 +13,17 @@
 #[cfg(target_os = "windows")]
 mod windows_impl {
     use std::path::Path;
+    use windows::core::{PCWSTR, PWSTR};
     use windows::Win32::Foundation::*;
-    use windows::Win32::Security::Authorization::*;
     use windows::Win32::Security::{
-        CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName, FreeSid, PSID,
+        self, FreeSid, PSID, PSECURITY_DESCRIPTOR, ACL,
+    };
+    use windows::Win32::Security::Authorization::{
+        self, CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
+        SECURITY_CAPABILITIES, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+        SUB_CONTAINERS_AND_OBJECTS_INHERIT, DENY_ACCESS, EXPLICIT_ACCESS_W,
+        TRUSTEE_IS_SID, TRUSTEE_IS_WELL_KNOWN_GROUP,
+        GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW,
     };
     use windows::Win32::Storage::FileSystem::*;
     use windows::Win32::System::Threading::*;

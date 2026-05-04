@@ -283,7 +283,7 @@ extern "system" fn service_main_entry(_argc: u32, _argv: *mut windows::core::PWS
             None,
         );
 
-        let result = match handle {
+        let _result = match handle {
             Ok(h) => {
                 service_globals::set(h);
 
