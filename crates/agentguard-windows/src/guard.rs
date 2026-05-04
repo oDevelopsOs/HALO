@@ -448,9 +448,9 @@ mod win32 {
                         new_dacl as *mut core::ffi::c_void,
                     ));
                 }
-                if !sec_desc.is_null() {
+                if !            sec_desc.0.is_null() {
                     windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(
-                        sec_desc as *mut core::ffi::c_void,
+                        sec_desc.0 as *mut core::ffi::c_void,
                     ));
                 }
                 let code = GetLastError();
@@ -467,7 +467,7 @@ mod win32 {
                     new_dacl as *mut core::ffi::c_void,
                 ));
             }
-            if !sec_desc.is_null() {
+            if !            sec_desc.0.is_null() {
                 windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(
                     sec_desc as *mut core::ffi::c_void,
                 ));
@@ -564,7 +564,7 @@ mod win32 {
                     new_dacl as *mut core::ffi::c_void,
                 ));
             }
-            if !sec_desc.is_null() {
+            if !            sec_desc.0.is_null() {
                 windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(
                     sec_desc as *mut core::ffi::c_void,
                 ));
