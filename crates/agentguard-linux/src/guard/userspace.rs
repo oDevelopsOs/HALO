@@ -147,6 +147,7 @@ mod tests {
     use tempfile::TempDir;
     use tokio::time::{timeout, Duration};
 
+    #[cfg(not(windows))]
     #[tokio::test]
     async fn detects_file_deletion() {
         let tmp = TempDir::new().expect("tempdir");
