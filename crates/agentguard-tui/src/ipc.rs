@@ -5,11 +5,14 @@
 
 #![allow(dead_code)]
 
-use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
-use agentguard_common::{IpcCommand, IpcResponse, SnapshotInfo};
+#[cfg(unix)]
+use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
 use anyhow::Context;
+
+use agentguard_common::{IpcCommand, IpcResponse, SnapshotInfo};
 
 pub struct IpcClient {
     socket_path: PathBuf,
@@ -20,29 +23,28 @@ impl IpcClient {
         Self { socket_path }
     }
 
-    pub fn send(&self, cmd: IpcCommand) -> Result<IpcResponse, anyhow::Error> {
-        #[cfg(not(unix))]
-        {
-            anyhow::bail!("IPC not available on this platform");
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::net::UnixStream;
-            let mut stream = UnixStream::connect(&self.socket_path).with_context(|| {
-                format!(
-                    "cannot connect to daemon at {}. Is agentguard running?",
-                    self.socket_path.display()
-                )
-            })?;
-            let json = serde_json::to_string(&cmd)?;
-            writeln!(stream, "{json}")?;
-            stream.flush()?;
+    #[cfg(not(unix))]
+    pub fn send(&self, _cmd: IpcCommand) -> Result<IpcResponse, anyhow::Error> {
+        anyhow::bail!("IPC not available on this platform");
+    }
 
-            let mut reader = BufReader::new(&mut stream);
-            let mut line = String::new();
-            reader.read_line(&mut line)?;
-            serde_json::from_str(line.trim()).with_context(|| format!("invalid response: {line}"))
-        }
+    #[cfg(unix)]
+    pub fn send(&self, cmd: IpcCommand) -> Result<IpcResponse, anyhow::Error> {
+        use std::os::unix::net::UnixStream;
+        let mut stream = UnixStream::connect(&self.socket_path).with_context(|| {
+            format!(
+                "cannot connect to daemon at {}. Is agentguard running?",
+                self.socket_path.display()
+            )
+        })?;
+        let json = serde_json::to_string(&cmd)?;
+        writeln!(stream, "{json}")?;
+        stream.flush()?;
+
+        let mut reader = BufReader::new(&mut stream);
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        serde_json::from_str(line.trim()).with_context(|| format!("invalid response: {line}"))
     }
 
     // ── Convenience methods ──────────────────────────────────────────────

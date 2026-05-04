@@ -116,9 +116,14 @@ impl IpcServer {
             listener
         };
         #[cfg(not(unix))]
-        let listener = {
-            compile_error!("IPC server only supported on Unix (Linux/macOS) for now");
-        };
+        {
+            tracing::warn!("IPC server not supported on this platform");
+            let (shutdown_tx, _shutdown_rx) = oneshot::channel::<()>();
+            return Ok(IpcShutdown {
+                tx: Some(shutdown_tx),
+                socket_path: socket_path.clone(),
+            });
+        }
 
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
         let sp = socket_path.clone();
