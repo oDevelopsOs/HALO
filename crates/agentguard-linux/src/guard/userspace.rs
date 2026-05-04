@@ -163,7 +163,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(32);
         let handle = tokio::spawn(guard.run(tx));
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
         std::fs::remove_file(&file).expect("remove");
 
         let ev = timeout(Duration::from_secs(3), rx.recv())

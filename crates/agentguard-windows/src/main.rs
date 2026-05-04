@@ -366,7 +366,7 @@ extern "system" fn service_main_entry(_argc: u32, _argv: *mut windows::core::PWS
                     dwCheckPoint: 0,
                     dwWaitHint: 0,
                 };
-                SetServiceStatus(h, &mut stopped_status);
+                let _ = SetServiceStatus(h, &mut stopped_status);
             }
             Err(e) => {
                 error!("RegisterServiceCtrlHandlerExW failed: {e:?}");
