@@ -10,6 +10,7 @@
 
 #[cfg(target_os = "windows")]
 mod windows_impl {
+    #![allow(dead_code)]
     use std::collections::HashSet;
     use std::sync::Arc;
     use tokio::sync::{mpsc, RwLock};
@@ -87,7 +88,7 @@ mod windows_impl {
 
                 if result == ERROR_ALREADY_EXISTS {
                     tracing::debug!("ETW session already exists, reconnecting...");
-                    ControlTraceW(
+                    let _ = ControlTraceW(
                         CONTROLTRACE_HANDLE { Value: 0 },
                         windows::core::PCWSTR(session_name.as_ptr()),
                         props,
@@ -134,7 +135,7 @@ mod windows_impl {
                 }
 
                 ProcessTrace(&[trace_handle], None, None).ok()?;
-                CloseTrace(trace_handle);
+                let _ = CloseTrace(trace_handle);
             }
 
             Ok(())

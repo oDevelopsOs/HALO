@@ -272,6 +272,7 @@ impl KernelGuard for WindowsGuard {
 mod win32 {
     //! Módulo interno con toda la lógica específica de Windows.
     //! Aislado aquí para que el resto del crate compile en Linux.
+    #![allow(dead_code)]
 
     use std::collections::HashMap;
     use std::collections::HashSet;
@@ -587,7 +588,7 @@ mod win32 {
                 .map_err(|e| format!("OpenProcessToken: {e}"))?;
 
             let mut size: u32 = 0;
-            GetTokenInformation(token, TokenUser, None, 0, &mut size);
+            let _ = GetTokenInformation(token, TokenUser, None, 0, &mut size);
             let mut buf: Vec<u8> = vec![0u8; size as usize];
             GetTokenInformation(
                 token,

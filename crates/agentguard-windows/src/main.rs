@@ -297,7 +297,7 @@ extern "system" fn service_main_entry(_argc: u32, _argv: *mut windows::core::PWS
                     dwCheckPoint: 0,
                     dwWaitHint: 5000,
                 };
-                SetServiceStatus(h, &mut status);
+                let _ = SetServiceStatus(h, &mut status);
 
                 // Iniciar el runtime de tokio y ejecutar el daemon
                 let rt = match tokio::runtime::Runtime::new() {
@@ -313,7 +313,7 @@ extern "system" fn service_main_entry(_argc: u32, _argv: *mut windows::core::PWS
                             dwCheckPoint: 0,
                             dwWaitHint: 0,
                         };
-                        SetServiceStatus(h, &mut stopped_status);
+                        let _ = SetServiceStatus(h, &mut stopped_status);
                         return;
                     }
                 };
@@ -334,7 +334,7 @@ extern "system" fn service_main_entry(_argc: u32, _argv: *mut windows::core::PWS
                         dwCheckPoint: 0,
                         dwWaitHint: 0,
                     };
-                    SetServiceStatus(h, &mut running_status);
+                    let _ = SetServiceStatus(h, &mut running_status);
 
                     let shutdown = Arc::new(AtomicBool::new(false));
                     let shutdown_poll = shutdown.clone();
@@ -402,7 +402,7 @@ extern "system" fn service_control_handler(
                     dwCheckPoint: 1,
                     dwWaitHint: 10000,
                 };
-                SetServiceStatus(service_globals::get(), &mut status);
+                let _ = SetServiceStatus(service_globals::get(), &mut status);
                 SERVICE_SHUTDOWN.store(true, Ordering::SeqCst);
                 NO_ERROR.0
             }
@@ -417,7 +417,7 @@ extern "system" fn service_control_handler(
                     dwCheckPoint: 0,
                     dwWaitHint: 0,
                 };
-                SetServiceStatus(service_globals::get(), &mut status);
+                let _ = SetServiceStatus(service_globals::get(), &mut status);
                 NO_ERROR.0
             }
             SERVICE_CONTROL_CONTINUE => {
@@ -431,7 +431,7 @@ extern "system" fn service_control_handler(
                     dwCheckPoint: 0,
                     dwWaitHint: 0,
                 };
-                SetServiceStatus(service_globals::get(), &mut status);
+                let _ = SetServiceStatus(service_globals::get(), &mut status);
                 NO_ERROR.0
             }
             SERVICE_CONTROL_INTERROGATE => {

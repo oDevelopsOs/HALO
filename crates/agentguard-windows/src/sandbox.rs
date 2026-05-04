@@ -12,6 +12,7 @@
 
 #[cfg(target_os = "windows")]
 mod windows_impl {
+    #![allow(dead_code)]
     use std::path::Path;
     use agentguard_core::config::Config;
 

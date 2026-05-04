@@ -719,7 +719,10 @@ mod tests {
         let vault = Vault::with_dir(tmp.path().join("vault")).expect("vault");
         let server = IpcServer::new(vault, config, "test", "userspace").expect("ipc");
 
-        let path_str = sub.display().to_string();
+        let path_str = std::fs::canonicalize(&sub)
+            .expect("canonicalize")
+            .display()
+            .to_string();
         server.execute(IpcCommand::Protect {
             path: path_str.clone(),
             watch_only: false,
