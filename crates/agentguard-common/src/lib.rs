@@ -112,8 +112,7 @@ mod tests {
 
     #[test]
     fn path_prefix_from_bytes_roundtrip() {
-        let p = PathPrefix::from_bytes(b"/home/alice/Documents")
-            .expect("fits in MAX_PREFIX_LEN");
+        let p = PathPrefix::from_bytes(b"/home/alice/Documents").expect("fits in MAX_PREFIX_LEN");
         assert_eq!(p.len as usize, "/home/alice/Documents".len());
         assert_eq!(p.as_slice(), b"/home/alice/Documents");
     }
@@ -273,9 +272,7 @@ mod ipc {
             message: std::string::String,
         },
         /// Operación rechazada o error.
-        Error {
-            message: std::string::String,
-        },
+        Error { message: std::string::String },
         /// Respuesta a Status.
         StatusData {
             version: std::string::String,
@@ -309,9 +306,7 @@ mod ipc {
         /// Respuesta a Ping.
         Pong,
         /// v2.1: agente lanzado en sandbox.
-        AgentLaunched {
-            sandbox_pid: u32,
-        },
+        AgentLaunched { sandbox_pid: u32 },
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]

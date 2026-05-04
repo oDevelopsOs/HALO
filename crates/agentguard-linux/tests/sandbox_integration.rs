@@ -8,6 +8,7 @@ mod sandbox_tests {
     use agentguard_core::config::Config;
     use agentguard_linux::sandbox::SandboxLauncher;
 
+    #[allow(clippy::field_reassign_with_default)]
     fn make_test_config(project_dir: &std::path::Path) -> Config {
         let mut config = Config::default();
         config.protected_dirs = vec![project_dir.to_path_buf()];

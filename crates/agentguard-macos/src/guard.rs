@@ -396,7 +396,7 @@ fn unix_ts() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agentguard_core::config::AgentMatch;
+    
 
     #[test]
     fn backend_name_is_macos() {
@@ -412,10 +412,8 @@ mod tests {
 
     #[test]
     fn matches_common_ai_agents() {
-        let patterns = vec![
-            AgentProcess { name: "cursor".into(), r#match: Default::default() },
-            AgentProcess { name: "claude".into(), r#match: Default::default() },
-        ];
+        let _patterns = [AgentProcess { name: "cursor".into(), r#match: Default::default() },
+            AgentProcess { name: "claude".into(), r#match: Default::default() }];
 
         #[cfg(target_os = "macos")]
         {

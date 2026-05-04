@@ -28,9 +28,7 @@ mod transport {
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
-use agentguard_common::{
-    IpcCommand, IpcResponse, IPC_SOCKET_PATH, IPC_PROTOCOL_VERSION,
-};
+use agentguard_common::{IpcCommand, IpcResponse, IPC_PROTOCOL_VERSION, IPC_SOCKET_PATH};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use transport::connect;
@@ -164,8 +162,12 @@ fn build_command(cmd: Command) -> IpcCommand {
         Command::Unprotect { path } => IpcCommand::Unprotect { path },
         Command::Snapshot(SnapshotCmd::Create { label }) => IpcCommand::SnapshotCreate { label },
         Command::Snapshot(SnapshotCmd::List) => IpcCommand::SnapshotList,
-        Command::Snapshot(SnapshotCmd::Restore { id, yes }) => IpcCommand::SnapshotRestore { id, yes },
-        Command::Snapshot(SnapshotCmd::Cleanup { keep_days }) => IpcCommand::SnapshotCleanup { keep_days },
+        Command::Snapshot(SnapshotCmd::Restore { id, yes }) => {
+            IpcCommand::SnapshotRestore { id, yes }
+        }
+        Command::Snapshot(SnapshotCmd::Cleanup { keep_days }) => {
+            IpcCommand::SnapshotCleanup { keep_days }
+        }
         Command::Incidents { last } => IpcCommand::Incidents { last: Some(last) },
         Command::Pause { minutes } => IpcCommand::Pause { minutes },
         Command::Resume => IpcCommand::Resume,
@@ -177,23 +179,36 @@ fn build_command(cmd: Command) -> IpcCommand {
             extra_args: args,
             mode_override: mode,
         },
-        Command::Check
-        | Command::Setup
-        | Command::Update { .. }
-        | Command::Init { .. } => unreachable!("build_command called with local-only command"), // unwrap-ok: filtered before IPC
+        Command::Check | Command::Setup | Command::Update { .. } | Command::Init { .. } => {
+            unreachable!("build_command called with local-only command")
+        } // unwrap-ok: filtered before IPC
     }
 }
 
-fn green(s: &str) -> String { format!("\x1b[32m{s}\x1b[0m") }
-fn red(s: &str) -> String { format!("\x1b[31m{s}\x1b[0m") }
-fn yellow(s: &str) -> String { format!("\x1b[33m{s}\x1b[0m") }
-fn bold(s: &str) -> String { format!("\x1b[1m{s}\x1b[0m") }
-fn dim(s: &str) -> String { format!("\x1b[2m{s}\x1b[0m") }
+fn green(s: &str) -> String {
+    format!("\x1b[32m{s}\x1b[0m")
+}
+fn red(s: &str) -> String {
+    format!("\x1b[31m{s}\x1b[0m")
+}
+fn yellow(s: &str) -> String {
+    format!("\x1b[33m{s}\x1b[0m")
+}
+fn bold(s: &str) -> String {
+    format!("\x1b[1m{s}\x1b[0m")
+}
+fn dim(s: &str) -> String {
+    format!("\x1b[2m{s}\x1b[0m")
+}
 
 fn fmt_size(bytes: u64) -> String {
-    if bytes >= 1_048_576 { format!("{:.1} MiB", bytes as f64 / 1_048_576.0) }
-    else if bytes >= 1024 { format!("{:.1} KiB", bytes as f64 / 1024.0) }
-    else { format!("{} B", bytes) }
+    if bytes >= 1_048_576 {
+        format!("{:.1} MiB", bytes as f64 / 1_048_576.0)
+    } else if bytes >= 1024 {
+        format!("{:.1} KiB", bytes as f64 / 1024.0)
+    } else {
+        format!("{} B", bytes)
+    }
 }
 
 fn fmt_ts(ts: u64) -> String {
@@ -221,7 +236,11 @@ fn format_response(response: IpcResponse) {
             std::process::exit(1);
         }
         IpcResponse::Pong => {
-            println!("{} daemon is running (protocol v{})", green("✓"), IPC_PROTOCOL_VERSION);
+            println!(
+                "{} daemon is running (protocol v{})",
+                green("✓"),
+                IPC_PROTOCOL_VERSION
+            );
         }
         IpcResponse::StatusData {
             version,
@@ -238,10 +257,28 @@ fn format_response(response: IpcResponse) {
             println!();
 
             // --- Guard status ---
-            let guard_icon = if protection_level.contains("kernel") { green("●") } else { "○".to_string() };
-            println!("  {} Guard:      {guard_backend} ({protection_level})", guard_icon);
-            println!("  {} DLP Proxy:  {}", if dlp_enabled { green("✓") } else { dim("✗") },
-                if dlp_enabled { "active on :7771" } else { "disabled" });
+            let guard_icon = if protection_level.contains("kernel") {
+                green("●")
+            } else {
+                "○".to_string()
+            };
+            println!(
+                "  {} Guard:      {guard_backend} ({protection_level})",
+                guard_icon
+            );
+            println!(
+                "  {} DLP Proxy:  {}",
+                if dlp_enabled {
+                    green("✓")
+                } else {
+                    dim("✗")
+                },
+                if dlp_enabled {
+                    "active on :7771"
+                } else {
+                    "disabled"
+                }
+            );
             if paused {
                 println!("  {} PAUSED — agentguard resume", yellow("⏸"));
             }
@@ -263,7 +300,10 @@ fn format_response(response: IpcResponse) {
             println!();
 
             // --- Quick actions ---
-            println!("  {}", dim("Commands: agentguard snapshot list | agentguard incidents"));
+            println!(
+                "  {}",
+                dim("Commands: agentguard snapshot list | agentguard incidents")
+            );
         }
         IpcResponse::SnapshotList { snapshots } => {
             if snapshots.is_empty() {
@@ -271,7 +311,10 @@ fn format_response(response: IpcResponse) {
                 return;
             }
             println!("  {}", bold("Snapshots"));
-            println!("  {:<36}  {:<14}  {:<16}  {:<6}  SIZE", "ID", "WHEN", "LABEL", "FILES");
+            println!(
+                "  {:<36}  {:<14}  {:<16}  {:<6}  SIZE",
+                "ID", "WHEN", "LABEL", "FILES"
+            );
             println!("  {}", dim(&"-".repeat(90)));
             for s in &snapshots {
                 let short_id = if s.id.len() > 8 { &s.id[..8] } else { &s.id };
@@ -284,8 +327,14 @@ fn format_response(response: IpcResponse) {
                 );
             }
             println!();
-            println!("  {}", dim("Restore:  agentguard snapshot restore <id> --yes"));
-            println!("  {}", dim("Cleanup:  agentguard snapshot cleanup --keep-days 30"));
+            println!(
+                "  {}",
+                dim("Restore:  agentguard snapshot restore <id> --yes")
+            );
+            println!(
+                "  {}",
+                dim("Cleanup:  agentguard snapshot cleanup --keep-days 30")
+            );
         }
         IpcResponse::Incidents { lines } => {
             if lines.is_empty() {
@@ -298,7 +347,10 @@ fn format_response(response: IpcResponse) {
             }
         }
         IpcResponse::AgentLaunched { sandbox_pid } => {
-            println!("  {}", green(&format!("Agent launched in sandbox (pid={sandbox_pid})")));
+            println!(
+                "  {}",
+                green(&format!("Agent launched in sandbox (pid={sandbox_pid})"))
+            );
         }
     }
 }
@@ -381,7 +433,10 @@ fn handle_init(output: Option<PathBuf>, defaults: bool) -> Result<()> {
             .ok_or_else(|| anyhow::anyhow!("cannot determine home directory"))?
             .join(".agentguard")
             .join("config.toml");
-        std::fs::create_dir_all(p.parent().ok_or_else(|| anyhow::anyhow!("invalid config path: no parent directory"))?)?;
+        std::fs::create_dir_all(
+            p.parent()
+                .ok_or_else(|| anyhow::anyhow!("invalid config path: no parent directory"))?,
+        )?;
         p
     } else if let Some(p) = output {
         p
@@ -449,8 +504,8 @@ fn handle_setup() -> Result<()> {
     let mut line = String::new();
     reader.read_line(&mut line)?;
 
-    let _response: IpcResponse = serde_json::from_str(line.trim())
-        .with_context(|| format!("invalid response: {line}"))?;
+    let _response: IpcResponse =
+        serde_json::from_str(line.trim()).with_context(|| format!("invalid response: {line}"))?;
 
     println!();
     println!("  {}", green("Setup complete!"));
@@ -486,9 +541,30 @@ fn handle_check() -> Result<()> {
             .map(|s| s.contains("bpf"))
             .unwrap_or(false);
 
-        println!("  bwrap:     {}", if bwrap { green("available") } else { red("not found — install bubblewrap") });
-        println!("  Landlock:  {}", if landlock { green("available") } else { yellow("kernel >= 5.13 required") });
-        println!("  eBPF LSM:  {}", if ebpf { green("available") } else { yellow("kernel >= 5.7 + CONFIG_BPF_LSM required") });
+        println!(
+            "  bwrap:     {}",
+            if bwrap {
+                green("available")
+            } else {
+                red("not found — install bubblewrap")
+            }
+        );
+        println!(
+            "  Landlock:  {}",
+            if landlock {
+                green("available")
+            } else {
+                yellow("kernel >= 5.13 required")
+            }
+        );
+        println!(
+            "  eBPF LSM:  {}",
+            if ebpf {
+                green("available")
+            } else {
+                yellow("kernel >= 5.7 + CONFIG_BPF_LSM required")
+            }
+        );
         println!();
 
         let effective = if bwrap && landlock {
@@ -546,8 +622,11 @@ fn handle_update(check_only: bool) -> Result<()> {
 
     match updater.check() {
         Ok(Some(version)) => {
-            println!("  {} v{version} available (current: v{})",
-                green("✓"), env!("CARGO_PKG_VERSION"));
+            println!(
+                "  {} v{version} available (current: v{})",
+                green("✓"),
+                env!("CARGO_PKG_VERSION")
+            );
 
             if check_only {
                 println!("  Run 'agentguard update' to install.");
@@ -557,7 +636,10 @@ fn handle_update(check_only: bool) -> Result<()> {
             print!("  Install update? [Y/n] ");
             use std::io::{self, BufRead, Write};
             io::stdout().flush().ok();
-            let line = io::stdin().lock().lines().next()
+            let line = io::stdin()
+                .lock()
+                .lines()
+                .next()
                 .unwrap_or(Ok("y".into()))
                 .unwrap_or("y".into());
 
@@ -581,8 +663,11 @@ fn handle_update(check_only: bool) -> Result<()> {
             }
         }
         Ok(None) => {
-            println!("  {} Already up to date (v{})",
-                green("✓"), env!("CARGO_PKG_VERSION"));
+            println!(
+                "  {} Already up to date (v{})",
+                green("✓"),
+                env!("CARGO_PKG_VERSION")
+            );
         }
         Err(e) => {
             println!("  {} Cannot check for updates: {e}", yellow("⚠"));
@@ -598,7 +683,10 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Init, Setup, Update and Check are handled locally (no IPC needed)
-    if matches!(cli.command, Command::Init { .. } | Command::Setup | Command::Check | Command::Update { .. }) {
+    if matches!(
+        cli.command,
+        Command::Init { .. } | Command::Setup | Command::Check | Command::Update { .. }
+    ) {
         match cli.command {
             Command::Init { output, defaults } => return handle_init(output, defaults),
             Command::Setup => return handle_setup(),
@@ -656,7 +744,10 @@ mod tests {
 
     #[test]
     fn build_command_protect() {
-        let cmd = build_command(Command::Protect { path: "/tmp/x".into(), watch_only: false });
+        let cmd = build_command(Command::Protect {
+            path: "/tmp/x".into(),
+            watch_only: false,
+        });
         match cmd {
             IpcCommand::Protect { path, watch_only } => {
                 assert_eq!(path, "/tmp/x");
@@ -668,7 +759,9 @@ mod tests {
 
     #[test]
     fn build_command_snapshot_create() {
-        let cmd = build_command(Command::Snapshot(SnapshotCmd::Create { label: "test".into() }));
+        let cmd = build_command(Command::Snapshot(SnapshotCmd::Create {
+            label: "test".into(),
+        }));
         match cmd {
             IpcCommand::SnapshotCreate { label } => assert_eq!(label, "test"),
             _ => panic!("wrong command"),
@@ -736,4 +829,3 @@ mod tests {
         assert!(p.to_string_lossy().contains(".agentguard"));
     }
 }
-

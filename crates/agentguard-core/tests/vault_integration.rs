@@ -30,7 +30,7 @@ async fn full_cycle_snapshot_destroy_restore() {
 
     let vault = Vault::with_dir(tmp.path().join("vault")).expect("vault");
     let snap = vault
-        .create_snapshot(&[zone.clone()], "pre-session")
+        .create_snapshot(std::slice::from_ref(&zone), "pre-session")
         .await
         .expect("snapshot");
     assert_eq!(snap.files.len(), 3);
@@ -57,7 +57,7 @@ async fn list_and_cleanup_interact_correctly() {
     let vault = Vault::with_dir(tmp.path().join("vault")).expect("vault");
     for i in 0..3 {
         vault
-            .create_snapshot(&[zone.clone()], &format!("snap-{i}"))
+            .create_snapshot(std::slice::from_ref(&zone), &format!("snap-{i}"))
             .await
             .expect("snap");
         tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
@@ -85,8 +85,8 @@ async fn hash_stability_across_snapshots() {
     write(&file, b"never changes");
 
     let vault = Vault::with_dir(tmp.path().join("vault")).expect("vault");
-    let s1 = vault.create_snapshot(&[zone.clone()], "a").await.expect("s1");
-    let s2 = vault.create_snapshot(&[zone], "b").await.expect("s2");
+    let s1 = vault.create_snapshot(std::slice::from_ref(&zone), "a").await.expect("s1");
+    let s2 = vault.create_snapshot(std::slice::from_ref(&zone), "b").await.expect("s2");
 
     assert_eq!(s1.files[0].hash, s2.files[0].hash);
     // Hash BLAKE3 de "never changes"

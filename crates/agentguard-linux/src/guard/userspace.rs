@@ -132,7 +132,7 @@ mod tests {
         let file = zone.join("target.txt");
         std::fs::write(&file, b"bye").expect("write");
 
-        let guard = Box::new(UserspaceGuard::new(&[zone.clone()]).expect("guard"));
+        let guard = Box::new(UserspaceGuard::new(std::slice::from_ref(&zone)).expect("guard"));
         assert_eq!(guard.protection_level(), ProtectionLevel::UserspaceObservation);
 
         let (tx, mut rx) = mpsc::channel(32);

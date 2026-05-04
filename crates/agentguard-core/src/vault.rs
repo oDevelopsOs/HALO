@@ -430,7 +430,7 @@ mod tests {
 
         let vault = Vault::with_dir(tmp.path().join("vault")).unwrap();
         let snap = vault
-            .create_snapshot(&[zone.clone()], "test")
+            .create_snapshot(std::slice::from_ref(&zone), "test")
             .await
             .unwrap();
         assert_eq!(snap.files.len(), 1);
@@ -474,7 +474,7 @@ mod tests {
         write_file(&zone.join("sub/deeper/leaf.md"), b"3");
 
         let vault = Vault::with_dir(tmp.path().join("vault")).unwrap();
-        let snap = vault.create_snapshot(&[zone.clone()], "nested").await.unwrap();
+        let snap = vault.create_snapshot(std::slice::from_ref(&zone), "nested").await.unwrap();
         assert_eq!(snap.files.len(), 3);
         assert_eq!(snap.total_size, 3);
     }
@@ -486,7 +486,7 @@ mod tests {
         write_file(&zone.join("f"), b"x");
         let vault = Vault::with_dir(tmp.path().join("vault")).unwrap();
 
-        let s1 = vault.create_snapshot(&[zone.clone()], "first").await.unwrap();
+        let s1 = vault.create_snapshot(std::slice::from_ref(&zone), "first").await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
         let s2 = vault.create_snapshot(&[zone], "second").await.unwrap();
 

@@ -1086,7 +1086,7 @@ mod tests {
 
     #[test]
     fn exe_only_fallback() {
-        let patterns = vec![AgentProcess { name: "cursor".into(), r#match: Default::default() }];
+        let _patterns = [AgentProcess { name: "cursor".into(), r#match: Default::default() }];
 
         #[cfg(windows)]
         {
