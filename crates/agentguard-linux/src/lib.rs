@@ -3,6 +3,7 @@
 //! Exports sandbox, process_watcher, and guard modules.
 
 pub mod guard;
+#[cfg(target_os = "linux")]
 pub mod landlock;
 pub mod sandbox;
 

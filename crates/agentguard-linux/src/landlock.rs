@@ -4,7 +4,9 @@
 //! capa adicional de restricción a nivel de kernel (sin necesidad de root).
 //!
 //! Requiere: kernel >= 5.13, crate `landlock` 0.4.
+//! Solo disponible en Linux.
 
+#[cfg(target_os = "linux")]
 use landlock::{
     path_beneath_rules, Access, AccessFs, Ruleset, RulesetAttr, RulesetCreatedAttr, RulesetStatus,
     ABI,

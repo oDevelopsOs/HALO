@@ -308,7 +308,7 @@ async fn main() -> Result<()> {
         move |exe, cwd, _extra_args, mode_override| {
             let cfg = cfg.clone();
             let mode = mode_override.unwrap_or_else(|| cfg.sandbox.modo_por_defecto.clone());
-            let use_landlock = mode == "hybrid";
+            let use_landlock = cfg!(target_os = "linux") && mode == "hybrid";
             let project_dir = PathBuf::from(cwd);
             let launcher = agentguard_linux::sandbox::SandboxLauncher::new(cfg);
             let rt = tokio::runtime::Runtime::new().map_err(|e| format!("tokio: {e}"))?;
