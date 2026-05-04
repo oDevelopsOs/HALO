@@ -187,7 +187,7 @@ impl KernelGuard for WindowsGuard {
             let paths = std::mem::take(&mut self.protected_paths);
             let patterns = std::mem::take(&mut self.agent_patterns);
             let mut tracked = std::mem::take(&mut self.tracked_pids);
-            let mut jobs = std::sync::Arc::new(std::sync::Mutex::new(HashMap::<u32, isize>::new()));
+            let jobs = std::sync::Arc::new(std::sync::Mutex::new(HashMap::<u32, isize>::new()));
 
             // Watcher de cambios en directorios protegidos
             let (notify_tx, notify_rx) =
@@ -227,7 +227,13 @@ impl KernelGuard for WindowsGuard {
             let scan_handle = tokio::spawn(async move {
                 loop {
                     {
-                        let mut jobs_lock = jobs_arc.lock().unwrap();
+                        let mut jobs_lock = match jobs_arc.lock() {
+                            Ok(lock) => lock,
+                            Err(_) => {
+                                tracing::error!("jobs mutex poisoned, stopping agent scan");
+                                return;
+                            }
+                        };
                         scan_and_contain_agents(&patterns, &mut tracked, &mut *jobs_lock, &scan_tx);
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(5_000)).await;
@@ -240,7 +246,8 @@ impl KernelGuard for WindowsGuard {
 
             let _ = tokio::join!(watch_handle, scan_handle);
 
-            for (&_pid, &handle_val) in jobs.lock().unwrap().iter() {
+            let jobs_lock = jobs.lock().map_err(|e| GuardError::Internal(format!("jobs mutex poisoned: {e}")))?;
+            for (&_pid, &handle_val) in jobs_lock.iter() {
                 unsafe {
                     let _ = CloseHandle(HANDLE(handle_val as *mut std::ffi::c_void));
                 }
@@ -1078,7 +1085,7 @@ mod tests {
 
     #[test]
     fn exe_only_fallback() {
-        let _patterns = [AgentProcess {
+        let patterns = [AgentProcess {
             name: "cursor".into(),
             r#match: Default::default(),
         }];
