@@ -52,15 +52,13 @@ aya = { version = "0.13", optional = true }
 aya-log = { version = "0.2", optional = true }
 include_bytes_aligned = "0.1"
 
-# v2.1: Sandbox launcher
+# v2.1: Sandbox launcher helpers
+which = "7"
+notify-rust = "4"
+
+# Linux-only: Landlock kernel API
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4"
-
-# Cross-platform
-which = "7"
-
-# Notificación de escritorio
-notify-rust = "4"
 
 [dev-dependencies]
 tempfile = "3"

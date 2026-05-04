@@ -1,6 +1,7 @@
 //! Cliente IPC para comunicarse con el daemon AgentGuard.
 //!
 //! Usa el mismo protocolo JSON-line que la CLI.
+//! Unix sockets en Linux/macOS. Stub en Windows.
 
 #![allow(dead_code)]
 
@@ -19,25 +20,29 @@ impl IpcClient {
         Self { socket_path }
     }
 
-    fn connect(&self) -> Result<std::os::unix::net::UnixStream, anyhow::Error> {
-        std::os::unix::net::UnixStream::connect(&self.socket_path).with_context(|| {
-            format!(
-                "cannot connect to daemon at {}. Is agentguard running?",
-                self.socket_path.display()
-            )
-        })
-    }
-
     pub fn send(&self, cmd: IpcCommand) -> Result<IpcResponse, anyhow::Error> {
-        let mut stream = self.connect()?;
-        let json = serde_json::to_string(&cmd)?;
-        writeln!(stream, "{json}")?;
-        stream.flush()?;
+        #[cfg(not(unix))]
+        {
+            anyhow::bail!("IPC not available on this platform");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::net::UnixStream;
+            let mut stream = UnixStream::connect(&self.socket_path).with_context(|| {
+                format!(
+                    "cannot connect to daemon at {}. Is agentguard running?",
+                    self.socket_path.display()
+                )
+            })?;
+            let json = serde_json::to_string(&cmd)?;
+            writeln!(stream, "{json}")?;
+            stream.flush()?;
 
-        let mut reader = BufReader::new(&mut stream);
-        let mut line = String::new();
-        reader.read_line(&mut line)?;
-        serde_json::from_str(line.trim()).with_context(|| format!("invalid response: {line}"))
+            let mut reader = BufReader::new(&mut stream);
+            let mut line = String::new();
+            reader.read_line(&mut line)?;
+            serde_json::from_str(line.trim()).with_context(|| format!("invalid response: {line}"))
+        }
     }
 
     // ── Convenience methods ──────────────────────────────────────────────

@@ -20,13 +20,14 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
+use notify::Watcher;
 use tokio::sync::mpsc;
 #[cfg(target_os = "macos")]
 use tracing::info;
 use tracing::warn;
 
 use agentguard_core::config::AgentProcess;
-use agentguard_core::{GuardError, KernelGuard, ProtectionLevel, SecurityEvent};
+use agentguard_core::{GuardError, KernelGuard, ProtectionLevel, SecurityEvent, ViolationKind};
 
 /// Intervalo de escaneo de procesos agente (milisegundos).
 #[cfg(target_os = "macos")]
@@ -312,14 +313,14 @@ fn scan_and_detect_agents(
 
     // Limpiar PIDs muertos
     tracked.retain(|&pid| {
-        let mut info: libc::proc_bsdshortinfo = unsafe { std::mem::zeroed() };
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
         let result = unsafe {
             libc::proc_pidinfo(
                 pid as i32,
-                libc::PROC_PIDT_SHORTBSDINFO,
+                libc::PROC_PIDTBSDINFO,
                 0,
                 &mut info as *mut _ as *mut _,
-                std::mem::size_of::<libc::proc_bsdshortinfo>() as i32,
+                std::mem::size_of::<libc::proc_bsdinfo>() as i32,
             )
         };
         result > 0
