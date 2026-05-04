@@ -187,7 +187,7 @@ impl KernelGuard for WindowsGuard {
             let paths = std::mem::take(&mut self.protected_paths);
             let patterns = std::mem::take(&mut self.agent_patterns);
             let mut tracked = std::mem::take(&mut self.tracked_pids);
-            let mut jobs: HashMap<u32, isize> = HashMap::new();
+            let mut jobs = std::sync::Arc::new(std::sync::Mutex::new(HashMap::<u32, isize>::new()));
 
             // Watcher de cambios en directorios protegidos
             let (notify_tx, notify_rx) =
@@ -223,9 +223,13 @@ impl KernelGuard for WindowsGuard {
             });
 
             let scan_tx = tx.clone();
+            let jobs_arc = jobs.clone();
             let scan_handle = tokio::spawn(async move {
                 loop {
-                    scan_and_contain_agents(&patterns, &mut tracked, &mut jobs, &scan_tx);
+                    {
+                        let mut jobs_lock = jobs_arc.lock().unwrap();
+                        scan_and_contain_agents(&patterns, &mut tracked, &mut *jobs_lock, &scan_tx);
+                    }
                     tokio::time::sleep(std::time::Duration::from_millis(5_000)).await;
                 }
             });
@@ -236,7 +240,7 @@ impl KernelGuard for WindowsGuard {
 
             let _ = tokio::join!(watch_handle, scan_handle);
 
-            for (&_pid, &handle_val) in &jobs {
+            for (&_pid, &handle_val) in jobs.lock().unwrap().iter() {
                 unsafe {
                     let _ = CloseHandle(HANDLE(handle_val as *mut std::ffi::c_void));
                 }
