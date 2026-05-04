@@ -13,8 +13,8 @@
 #[cfg(target_os = "windows")]
 mod windows_impl {
     #![allow(dead_code)]
-    use std::path::Path;
     use agentguard_core::config::Config;
+    use std::path::Path;
 
     pub struct SandboxLauncher {
         _config: Config,
@@ -33,7 +33,9 @@ mod windows_impl {
         ) -> Result<u32, anyhow::Error> {
             // AppContainer sandbox requires Windows 10 build 15063+ with
             // SECURITY_CAPABILITIES API (currently not available in windows-rs v0.58)
-            anyhow::bail!("AppContainer sandbox not yet available (requires future windows crate version)")
+            anyhow::bail!(
+                "AppContainer sandbox not yet available (requires future windows crate version)"
+            )
         }
 
         pub fn check_capabilities() -> SandboxCapabilities {

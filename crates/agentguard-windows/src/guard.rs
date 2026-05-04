@@ -246,7 +246,9 @@ impl KernelGuard for WindowsGuard {
 
             let _ = tokio::join!(watch_handle, scan_handle);
 
-            let jobs_lock = jobs.lock().map_err(|e| GuardError::Internal(format!("jobs mutex poisoned: {e}")))?;
+            let jobs_lock = jobs
+                .lock()
+                .map_err(|e| GuardError::Internal(format!("jobs mutex poisoned: {e}")))?;
             for (&_pid, &handle_val) in jobs_lock.iter() {
                 unsafe {
                     let _ = CloseHandle(HANDLE(handle_val as *mut std::ffi::c_void));
@@ -304,6 +306,10 @@ mod win32 {
         DELETE, FILE_ACCESS_RIGHTS, FILE_DELETE_CHILD, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA,
         FILE_WRITE_EA, WRITE_DAC, WRITE_OWNER,
     };
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
     use windows::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicLimitInformation,
         SetInformationJobObject, JOBOBJECT_BASIC_LIMIT_INFORMATION,
@@ -312,10 +318,6 @@ mod win32 {
     use windows::Win32::System::Threading::{
         GetCurrentProcess, GetCurrentProcessId, OpenProcess, OpenProcessToken,
         PROCESS_QUERY_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE, PROCESS_VM_READ,
-    };
-    use windows::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
-        TH32CS_SNAPPROCESS,
     };
 
     /// Permisos que se deniegan en las carpetas protegidas.
@@ -452,7 +454,7 @@ mod win32 {
                         new_dacl as *mut core::ffi::c_void,
                     ));
                 }
-                if !            sec_desc.0.is_null() {
+                if !sec_desc.0.is_null() {
                     windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(
                         sec_desc.0 as *mut core::ffi::c_void,
                     ));
@@ -471,7 +473,7 @@ mod win32 {
                     new_dacl as *mut core::ffi::c_void,
                 ));
             }
-            if !            sec_desc.0.is_null() {
+            if !sec_desc.0.is_null() {
                 windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(
                     sec_desc.0 as *mut core::ffi::c_void,
                 ));
@@ -568,7 +570,7 @@ mod win32 {
                     new_dacl as *mut core::ffi::c_void,
                 ));
             }
-            if !            sec_desc.0.is_null() {
+            if !sec_desc.0.is_null() {
                 windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(
                     sec_desc.0 as *mut core::ffi::c_void,
                 ));
@@ -675,12 +677,12 @@ mod win32 {
     ) -> windows::core::Result<()> {
         unsafe {
             windows::Win32::System::Diagnostics::Debug::ReadProcessMemory(
-            process,
-            base,
-            buf,
-            size,
-            Some(out),
-        )
+                process,
+                base,
+                buf,
+                size,
+                Some(out),
+            )
         }
     }
 
