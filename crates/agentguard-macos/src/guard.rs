@@ -20,6 +20,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
+#[cfg(target_os = "macos")]
 use notify::Watcher;
 use tokio::sync::mpsc;
 #[cfg(target_os = "macos")]
@@ -27,7 +28,9 @@ use tracing::info;
 use tracing::warn;
 
 use agentguard_core::config::AgentProcess;
-use agentguard_core::{GuardError, KernelGuard, ProtectionLevel, SecurityEvent, ViolationKind};
+#[cfg(target_os = "macos")]
+use agentguard_core::ViolationKind;
+use agentguard_core::{GuardError, KernelGuard, ProtectionLevel, SecurityEvent};
 
 /// Intervalo de escaneo de procesos agente (milisegundos).
 #[cfg(target_os = "macos")]
