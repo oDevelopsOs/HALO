@@ -281,14 +281,14 @@ mod win32 {
     use windows::Win32::Foundation::{
         CloseHandle, GetLastError, ERROR_ACCESS_DENIED, HANDLE, WIN32_ERROR,
     };
-    use windows::Win32::Security::{
-        ACL, DACL_SECURITY_INFORMATION, GetTokenInformation, PROTECTED_DACL_SECURITY_INFORMATION,
-        SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_QUERY, TokenUser, TOKEN_USER,
-    };
     use windows::Win32::Security::Authorization::{
         GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, DENY_ACCESS,
-        EXPLICIT_ACCESS_W, MULTIPLE_TRUSTEE_OPERATION, SE_FILE_OBJECT, TRUSTEE_IS_SID,
-        TRUSTEE_W,
+        EXPLICIT_ACCESS_W, MULTIPLE_TRUSTEE_OPERATION, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_W,
+    };
+    use windows::Win32::Security::{
+        GetTokenInformation, TokenUser, ACL, DACL_SECURITY_INFORMATION,
+        PROTECTED_DACL_SECURITY_INFORMATION, SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_QUERY,
+        TOKEN_USER,
     };
     use windows::Win32::Storage::FileSystem::{
         DELETE, FILE_ACCESS_RIGHTS, FILE_DELETE_CHILD, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA,
@@ -299,6 +299,7 @@ mod win32 {
         SetInformationJobObject, JOBOBJECT_BASIC_LIMIT_INFORMATION,
         JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
+    use windows::Win32::System::Kernel::PROCESS_BASIC_INFORMATION;
     use windows::Win32::System::Threading::{
         GetCurrentProcess, GetCurrentProcessId, OpenProcess, OpenProcessToken,
         PROCESS_QUERY_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE, PROCESS_VM_READ,
@@ -307,15 +308,17 @@ mod win32 {
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
         TH32CS_SNAPPROCESS,
     };
-    use windows::Win32::System::WindowsProgramming::{
-        NtQueryInformationProcess, PROCESSINFOCLASS,
-    };
-    use windows::Win32::System::Kernel::PROCESS_BASIC_INFORMATION;
+    use windows::Win32::System::WindowsProgramming::{NtQueryInformationProcess, PROCESSINFOCLASS};
 
     /// Permisos que se deniegan en las carpetas protegidas.
     pub const DENY_PERMISSIONS: FILE_ACCESS_RIGHTS = FILE_ACCESS_RIGHTS(
-        DELETE.0 | FILE_DELETE_CHILD.0 | FILE_WRITE_DATA.0 |
-        FILE_WRITE_EA.0 | FILE_WRITE_ATTRIBUTES.0 | WRITE_DAC.0 | WRITE_OWNER.0
+        DELETE.0
+            | FILE_DELETE_CHILD.0
+            | FILE_WRITE_DATA.0
+            | FILE_WRITE_EA.0
+            | FILE_WRITE_ATTRIBUTES.0
+            | WRITE_DAC.0
+            | WRITE_OWNER.0,
     );
 
     // ── PEB structures (estables en Windows 64-bit desde Vista) ─
@@ -391,7 +394,8 @@ mod win32 {
         if result.is_err() {
             let code = unsafe { GetLastError() };
             return Err(GuardError::Internal(format!(
-                "GetNamedSecurityInfoW failed for {path:?}: code 0x{:08x}", code.0
+                "GetNamedSecurityInfoW failed for {path:?}: code 0x{:08x}",
+                code.0
             )));
         }
 
@@ -416,7 +420,8 @@ mod win32 {
             if result != WIN32_ERROR(0) {
                 let code = GetLastError();
                 return Err(GuardError::Internal(format!(
-                    "SetEntriesInAclW failed: code 0x{:08x}", code.0
+                    "SetEntriesInAclW failed: code 0x{:08x}",
+                    code.0
                 )));
             }
         }
@@ -445,7 +450,8 @@ mod win32 {
                 }
                 let code = GetLastError();
                 return Err(GuardError::Internal(format!(
-                    "SetNamedSecurityInfoW failed for {path:?}: code 0x{:08x}", code.0
+                    "SetNamedSecurityInfoW failed for {path:?}: code 0x{:08x}",
+                    code.0
                 )));
             }
         }
@@ -500,7 +506,8 @@ mod win32 {
                     return Ok(());
                 }
                 return Err(GuardError::Internal(format!(
-                    "GetNamedSecurityInfoW failed for cleanup {path:?}: 0x{:08x}", code.0
+                    "GetNamedSecurityInfoW failed for cleanup {path:?}: 0x{:08x}",
+                    code.0
                 )));
             }
         }

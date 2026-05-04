@@ -14,15 +14,13 @@ mod windows_impl {
     use std::sync::Arc;
     use tokio::sync::{mpsc, RwLock};
     use windows::core::GUID;
-    use windows::Win32::Foundation::{WIN32_ERROR, ERROR_ALREADY_EXISTS};
+    use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, WIN32_ERROR};
     use windows::Win32::System::Diagnostics::Etw::{
-        TRACEHANDLE, EVENT_TRACE_LOGFILEW, OpenTraceW,
-        StartTraceW, ProcessTrace, CloseTrace,
-        EnableTraceEx2, ControlTraceW,
-        EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_INFORMATION,
-        WNODE_FLAG_TRACED_GUID, EVENT_TRACE_REAL_TIME_MODE,
-        PROCESS_TRACE_MODE_REAL_TIME, PROCESS_TRACE_MODE_EVENT_RECORD,
-        EVENT_TRACE_CONTROL_STOP, EVENT_RECORD, EVENT_TRACE_PROPERTIES,
+        CloseTrace, ControlTraceW, EnableTraceEx2, OpenTraceW, ProcessTrace, StartTraceW,
+        EVENT_CONTROL_CODE_ENABLE_PROVIDER, EVENT_RECORD, EVENT_TRACE_CONTROL_STOP,
+        EVENT_TRACE_LOGFILEW, EVENT_TRACE_PROPERTIES, EVENT_TRACE_REAL_TIME_MODE,
+        PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_REAL_TIME, TRACEHANDLE,
+        TRACE_LEVEL_INFORMATION, WNODE_FLAG_TRACED_GUID,
     };
 
     use agentguard_core::config::Config;

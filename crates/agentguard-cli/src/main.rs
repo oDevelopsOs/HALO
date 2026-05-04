@@ -19,25 +19,36 @@ mod transport {
 #[cfg(not(unix))]
 mod transport {
     use std::io;
-    use std::path::Path;
     use std::io::{Read, Write};
+    use std::path::Path;
 
     pub struct StubStream;
 
     impl Read for StubStream {
         fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
-            Err(io::Error::new(io::ErrorKind::NotConnected, "IPC not available on this platform"))
+            Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "IPC not available on this platform",
+            ))
         }
     }
     impl Write for StubStream {
         fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
-            Err(io::Error::new(io::ErrorKind::NotConnected, "IPC not available on this platform"))
+            Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "IPC not available on this platform",
+            ))
         }
-        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     pub fn connect(_path: &Path) -> io::Result<StubStream> {
-        Err(io::Error::new(io::ErrorKind::NotConnected, "IPC not available on this platform (use Unix socket or named pipe)"))
+        Err(io::Error::new(
+            io::ErrorKind::NotConnected,
+            "IPC not available on this platform (use Unix socket or named pipe)",
+        ))
     }
 }
 

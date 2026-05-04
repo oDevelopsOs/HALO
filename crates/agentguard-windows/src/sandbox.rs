@@ -16,8 +16,7 @@ mod windows_impl {
     use windows::Win32::Foundation::*;
     use windows::Win32::Security::Authorization::*;
     use windows::Win32::Security::{
-        CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
-        PSID, FreeSid,
+        CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName, FreeSid, PSID,
     };
     use windows::Win32::Storage::FileSystem::*;
     use windows::Win32::System::Threading::*;
