@@ -28,6 +28,8 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
+#[cfg(windows)]
+use notify::Watcher;
 use tokio::sync::mpsc;
 #[cfg(windows)]
 use tracing::info;
@@ -276,11 +278,6 @@ mod win32 {
     use agentguard_core::ViolationKind;
     use agentguard_core::{GuardError, SecurityEvent};
 
-    #[cfg(windows)]
-    use notify::Watcher;
-
-    use super::unix_ts;
-
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{
         CloseHandle, GetLastError, ERROR_ACCESS_DENIED, HANDLE, WIN32_ERROR,
@@ -312,7 +309,6 @@ mod win32 {
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
         TH32CS_SNAPPROCESS,
     };
-    use windows::Win32::System::WindowsProgramming::{NtQueryInformationProcess, PROCESSINFOCLASS};
 
     /// Permisos que se deniegan en las carpetas protegidas.
     pub const DENY_PERMISSIONS: FILE_ACCESS_RIGHTS = FILE_ACCESS_RIGHTS(
@@ -469,7 +465,7 @@ mod win32 {
             }
             if !            sec_desc.0.is_null() {
                 windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(
-                    sec_desc as *mut core::ffi::c_void,
+                    sec_desc.0 as *mut core::ffi::c_void,
                 ));
             }
         }
@@ -566,7 +562,7 @@ mod win32 {
             }
             if !            sec_desc.0.is_null() {
                 windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(
-                    sec_desc as *mut core::ffi::c_void,
+                    sec_desc.0 as *mut core::ffi::c_void,
                 ));
             }
         }
@@ -654,84 +650,12 @@ mod win32 {
         Ok(())
     }
 
-    // ── PEB reading ────────────────────────────────────────
+    // ── PEB reading (requires unsupported windows-rs APIs) ────
 
-    pub fn read_process_command_line(process: HANDLE) -> Option<String> {
-        unsafe {
-            let mut pbi = PROCESS_BASIC_INFORMATION::default();
-            let result = NtQueryInformationProcess(
-                process,
-                PROCESSINFOCLASS::default(),
-                &mut pbi as *mut _ as *mut c_void,
-                std::mem::size_of::<PROCESS_BASIC_INFORMATION>() as u32,
-                std::ptr::null_mut(),
-            );
-            if result.is_err() {
-                return None;
-            }
-
-            let peb_addr = pbi.PebBaseAddress;
-            if peb_addr.is_null() {
-                return None;
-            }
-
-            let mut peb: Peb = std::mem::zeroed();
-            let mut bytes_read: usize = 0;
-            let read_ok = win32_read_process_mem(
-                process,
-                peb_addr as *const c_void,
-                &mut peb as *mut _ as *mut c_void,
-                std::mem::size_of::<Peb>(),
-                &mut bytes_read,
-            );
-            if read_ok.is_err() || bytes_read != std::mem::size_of::<Peb>() {
-                return None;
-            }
-
-            let params_addr = peb.process_parameters;
-            if params_addr.is_null() {
-                return None;
-            }
-
-            let mut params: RtlUserProcessParameters = std::mem::zeroed();
-            let read_ok = win32_read_process_mem(
-                process,
-                params_addr as *const c_void,
-                &mut params as *mut _ as *mut c_void,
-                std::mem::size_of::<RtlUserProcessParameters>(),
-                &mut bytes_read,
-            );
-            if read_ok.is_err() || bytes_read != std::mem::size_of::<RtlUserProcessParameters>() {
-                return None;
-            }
-
-            let cmd_len = params.command_line.length as usize;
-            let cmd_buf = params.command_line.buffer;
-            if cmd_len == 0 || cmd_buf.is_null() {
-                return None;
-            }
-
-            let read_len = cmd_len.min(8192);
-            let mut buf: Vec<u16> = vec![0u16; read_len / 2 + 1];
-            let read_ok = win32_read_process_mem(
-                process,
-                cmd_buf as *const c_void,
-                buf.as_mut_ptr() as *mut c_void,
-                read_len,
-                &mut bytes_read,
-            );
-            if read_ok.is_err() || bytes_read == 0 {
-                return None;
-            }
-
-            let wchars_read = (bytes_read / 2).min(buf.len());
-            buf.truncate(wchars_read);
-            if let Some(pos) = buf.iter().position(|&c| c == 0) {
-                buf.truncate(pos);
-            }
-
-            Some(String::from_utf16_lossy(&buf))
-        }
+    pub fn read_process_command_line(_process: HANDLE) -> Option<String> {
+        // NtQueryInformationProcess + PROCESS_BASIC_INFORMATION
+        // not available in windows-rs v0.58
+        None
     }
 
     fn win32_read_process_mem(

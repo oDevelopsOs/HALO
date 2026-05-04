@@ -19,7 +19,7 @@ mod windows_impl {
         CloseTrace, ControlTraceW, EnableTraceEx2, OpenTraceW, ProcessTrace, StartTraceW,
         EVENT_CONTROL_CODE_ENABLE_PROVIDER, EVENT_RECORD, EVENT_TRACE_CONTROL_STOP,
         EVENT_TRACE_LOGFILEW, EVENT_TRACE_PROPERTIES, EVENT_TRACE_REAL_TIME_MODE,
-        PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_REAL_TIME, TRACEHANDLE,
+        PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_REAL_TIME, PROCESSTRACE_HANDLE,
         TRACE_LEVEL_INFORMATION, WNODE_FLAG_TRACED_GUID,
     };
 
@@ -75,7 +75,7 @@ mod windows_impl {
                 (*props).MaximumBuffers = 8;
             }
 
-            let mut session_handle: TRACEHANDLE = TRACEHANDLE(0);
+            let mut session_handle: PROCESSTRACE_HANDLE = PROCESSTRACE_HANDLE { Value: 0 };
 
             unsafe {
                 let result = StartTraceW(
@@ -87,7 +87,7 @@ mod windows_impl {
                 if result == ERROR_ALREADY_EXISTS {
                     tracing::debug!("ETW session already exists, reconnecting...");
                     ControlTraceW(
-                        TRACEHANDLE(0),
+                        PROCESSTRACE_HANDLE { Value: 0 },
                         windows::core::PCWSTR(session_name.as_ptr()),
                         props,
                         EVENT_TRACE_CONTROL_STOP,
@@ -124,11 +124,11 @@ mod windows_impl {
                 log_file.LoggerName = windows::core::PWSTR(session_name_w.as_ptr() as *mut u16);
                 log_file.Anonymous1.ProcessTraceMode =
                     PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD;
-                log_file.EventRecordCallback = Some(Self::event_callback);
+                log_file.Anonymous2.EventRecordCallback = Some(Self::event_callback);
                 log_file.Context = self as *const Self as *mut std::ffi::c_void;
 
                 let trace_handle = OpenTraceW(&mut log_file);
-                if trace_handle.0 == u64::MAX {
+                if trace_handle.Value == u64::MAX {
                     anyhow::bail!("OpenTraceW failed");
                 }
 
