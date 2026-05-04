@@ -270,20 +270,29 @@ mod win32 {
     use tracing::{info, warn};
 
     use agentguard_core::config::{AgentMatch, AgentProcess};
-    use agentguard_core::{GuardError, SecurityEvent, ViolationKind};
+    #[cfg(windows)]
+    use agentguard_core::ViolationKind;
+    use agentguard_core::{GuardError, SecurityEvent};
+    use notify::Watcher;
+
+    use super::unix_ts;
 
     use windows::core::PCWSTR;
-    use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, HANDLE};
-    use windows::Win32::Security::Authorization::{
-        GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, ACL,
-        DACL_SECURITY_INFORMATION, DENY_ACCESS, EXPLICIT_ACCESS_W,
-        PROTECTED_DACL_SECURITY_INFORMATION, SE_FILE_OBJECT, SUB_CONTAINERS_AND_OBJECTS_INHERIT,
-        TRUSTEE_IS_SID, TRUSTEE_W,
+    use windows::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, HANDLE, WIN32_ERROR,
     };
-    use windows::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER};
+    use windows::Win32::Security::{
+        ACL, DACL_SECURITY_INFORMATION, GetTokenInformation, PROTECTED_DACL_SECURITY_INFORMATION,
+        SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_QUERY, TokenUser, TOKEN_USER,
+    };
+    use windows::Win32::Security::Authorization::{
+        GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, DENY_ACCESS,
+        EXPLICIT_ACCESS_W, MULTIPLE_TRUSTEE_OPERATION, SE_FILE_OBJECT, TRUSTEE_IS_SID,
+        TRUSTEE_W,
+    };
     use windows::Win32::Storage::FileSystem::{
-        DELETE, FILE_DELETE_CHILD, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA,
-        WRITE_DAC, WRITE_OWNER,
+        DELETE, FILE_ACCESS_RIGHTS, FILE_DELETE_CHILD, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA,
+        FILE_WRITE_EA, WRITE_DAC, WRITE_OWNER,
     };
     use windows::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicLimitInformation,
@@ -291,21 +300,23 @@ mod win32 {
         JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     use windows::Win32::System::Threading::{
-        CreateToolhelp32Snapshot, GetCurrentProcess, GetCurrentProcessId,
-        NtQueryInformationProcess, OpenProcess, OpenProcessToken, Process32FirstW, Process32NextW,
-        TokenUser, PROCESSENTRY32W, PROCESSINFOCLASS, PROCESS_BASIC_INFORMATION,
+        GetCurrentProcess, GetCurrentProcessId, OpenProcess, OpenProcessToken,
         PROCESS_QUERY_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE, PROCESS_VM_READ,
+    };
+    use windows::Win32::System::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
         TH32CS_SNAPPROCESS,
     };
+    use windows::Win32::System::WindowsProgramming::{
+        NtQueryInformationProcess, PROCESSINFOCLASS,
+    };
+    use windows::Win32::System::Kernel::PROCESS_BASIC_INFORMATION;
 
     /// Permisos que se deniegan en las carpetas protegidas.
-    pub const DENY_PERMISSIONS: u32 = DELETE
-        | FILE_DELETE_CHILD
-        | FILE_WRITE_DATA
-        | FILE_WRITE_EA
-        | FILE_WRITE_ATTRIBUTES
-        | WRITE_DAC
-        | WRITE_OWNER;
+    pub const DENY_PERMISSIONS: FILE_ACCESS_RIGHTS = FILE_ACCESS_RIGHTS(
+        DELETE.0 | FILE_DELETE_CHILD.0 | FILE_WRITE_DATA.0 |
+        FILE_WRITE_EA.0 | FILE_WRITE_ATTRIBUTES.0 | WRITE_DAC.0 | WRITE_OWNER.0
+    );
 
     // ── PEB structures (estables en Windows 64-bit desde Vista) ─
 
@@ -369,10 +380,10 @@ mod win32 {
                 PCWSTR::from_raw(path_wide.as_ptr()),
                 SE_FILE_OBJECT,
                 DACL_SECURITY_INFORMATION,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                &mut dacl,
-                std::ptr::null_mut(),
+                None,
+                None,
+                Some(&mut dacl),
+                None,
                 &mut sec_desc,
             )
         };
@@ -380,13 +391,13 @@ mod win32 {
         if result.is_err() {
             let code = unsafe { GetLastError() };
             return Err(GuardError::Internal(format!(
-                "GetNamedSecurityInfoW failed for {path:?}: code 0x{code:08x}"
+                "GetNamedSecurityInfoW failed for {path:?}: code 0x{:08x}", code.0
             )));
         }
 
         let trustee = TRUSTEE_W {
             pMultipleTrustee: std::ptr::null_mut(),
-            MultipleTrusteeOperation: 0,
+            MultipleTrusteeOperation: MULTIPLE_TRUSTEE_OPERATION(0),
             TrusteeForm: TRUSTEE_IS_SID,
             TrusteeType: Default::default(),
             ptstrName: windows::core::PWSTR(sid.as_ptr() as *mut u16),
@@ -401,11 +412,11 @@ mod win32 {
 
         let mut new_dacl: *mut ACL = std::ptr::null_mut();
         unsafe {
-            let result = SetEntriesInAclW(&[ea], dacl as *const _, &mut new_dacl);
-            if result != 0 {
+            let result = SetEntriesInAclW(Some(&[ea]), Some(dacl as *const _), &mut new_dacl);
+            if result != WIN32_ERROR(0) {
                 let code = GetLastError();
                 return Err(GuardError::Internal(format!(
-                    "SetEntriesInAclW failed: code 0x{code:08x}"
+                    "SetEntriesInAclW failed: code 0x{:08x}", code.0
                 )));
             }
         }
@@ -415,26 +426,26 @@ mod win32 {
                 PCWSTR::from_raw(path_wide.as_ptr()),
                 SE_FILE_OBJECT,
                 DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-                std::ptr::null(),
-                std::ptr::null(),
-                new_dacl as *const _,
-                std::ptr::null(),
+                None,
+                None,
+                Some(new_dacl),
+                None,
             );
 
             if result.is_err() {
                 if new_dacl as *const _ != dacl as *const _ {
                     windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(
-                        new_dacl as isize,
+                        new_dacl as *mut core::ffi::c_void,
                     ));
                 }
                 if !sec_desc.is_null() {
                     windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(
-                        sec_desc as isize,
+                        sec_desc as *mut core::ffi::c_void,
                     ));
                 }
                 let code = GetLastError();
                 return Err(GuardError::Internal(format!(
-                    "SetNamedSecurityInfoW failed for {path:?}: code 0x{code:08x}"
+                    "SetNamedSecurityInfoW failed for {path:?}: code 0x{:08x}", code.0
                 )));
             }
         }
@@ -442,12 +453,12 @@ mod win32 {
         unsafe {
             if new_dacl as *const _ != dacl as *const _ {
                 windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(
-                    new_dacl as isize,
+                    new_dacl as *mut core::ffi::c_void,
                 ));
             }
             if !sec_desc.is_null() {
                 windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(
-                    sec_desc as isize,
+                    sec_desc as *mut core::ffi::c_void,
                 ));
             }
         }
@@ -475,10 +486,10 @@ mod win32 {
                 PCWSTR::from_raw(path_wide.as_ptr()),
                 SE_FILE_OBJECT,
                 DACL_SECURITY_INFORMATION,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                &mut dacl,
-                std::ptr::null_mut(),
+                None,
+                None,
+                Some(&mut dacl),
+                None,
                 &mut sec_desc,
             );
 
@@ -489,14 +500,14 @@ mod win32 {
                     return Ok(());
                 }
                 return Err(GuardError::Internal(format!(
-                    "GetNamedSecurityInfoW failed for cleanup {path:?}: 0x{code:08x}"
+                    "GetNamedSecurityInfoW failed for cleanup {path:?}: 0x{:08x}", code.0
                 )));
             }
         }
 
         let trustee = TRUSTEE_W {
             pMultipleTrustee: std::ptr::null_mut(),
-            MultipleTrusteeOperation: 0,
+            MultipleTrusteeOperation: MULTIPLE_TRUSTEE_OPERATION(0),
             TrusteeForm: TRUSTEE_IS_SID,
             TrusteeType: Default::default(),
             ptstrName: windows::core::PWSTR(sid.as_ptr() as *mut u16),
@@ -511,9 +522,9 @@ mod win32 {
 
         let mut new_dacl: *mut ACL = std::ptr::null_mut();
         unsafe {
-            let result = SetEntriesInAclW(&[ea], dacl as *const _, &mut new_dacl);
-            if result != 0 {
-                warn!(path = ?path, "SetEntriesInAclW during cleanup returned {result}");
+            let result = SetEntriesInAclW(Some(&[ea]), Some(dacl as *const _), &mut new_dacl);
+            if result != WIN32_ERROR(0) {
+                warn!(path = ?path, "SetEntriesInAclW during cleanup returned {:?}", result);
                 return Ok(());
             }
         }
@@ -523,10 +534,10 @@ mod win32 {
                 PCWSTR::from_raw(path_wide.as_ptr()),
                 SE_FILE_OBJECT,
                 DACL_SECURITY_INFORMATION,
-                std::ptr::null(),
-                std::ptr::null(),
-                new_dacl as *const _,
-                std::ptr::null(),
+                None,
+                None,
+                Some(new_dacl),
+                None,
             );
 
             if result.is_err() {
@@ -537,12 +548,12 @@ mod win32 {
         unsafe {
             if new_dacl as *const _ != dacl as *const _ {
                 windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(
-                    new_dacl as isize,
+                    new_dacl as *mut core::ffi::c_void,
                 ));
             }
             if !sec_desc.is_null() {
                 windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(
-                    sec_desc as isize,
+                    sec_desc as *mut core::ffi::c_void,
                 ));
             }
         }
@@ -560,11 +571,11 @@ mod win32 {
                 .map_err(|e| format!("OpenProcessToken: {e}"))?;
 
             let mut size: u32 = 0;
-            GetTokenInformation(token, TOKEN_USER, None, 0, &mut size);
+            GetTokenInformation(token, TokenUser, None, 0, &mut size);
             let mut buf: Vec<u8> = vec![0u8; size as usize];
             GetTokenInformation(
                 token,
-                TOKEN_USER,
+                TokenUser,
                 Some(buf.as_mut_ptr() as *mut _),
                 size,
                 &mut size,
@@ -579,7 +590,7 @@ mod win32 {
             let sid_len = windows::Win32::Security::GetLengthSid(sid) as usize;
             let mut sid_bytes: Vec<u16> = vec![0u16; sid_len];
             std::ptr::copy_nonoverlapping(
-                sid as *const u8,
+                sid.0 as *const u8,
                 sid_bytes.as_mut_ptr() as *mut u8,
                 sid_len,
             );
@@ -721,7 +732,7 @@ mod win32 {
             process,
             base,
             buf,
-            size as u32,
+            size,
             Some(out),
         )
     }
@@ -985,6 +996,11 @@ use win32::{
     apply_deny_aces, assign_process_to_job, create_restricted_job_for, matches_agent_exe_only,
     matches_agent_full, read_process_command_line, remove_deny_aces, scan_and_contain_agents,
 };
+
+// SAFETY: HANDLEs in WindowsGuard are only accessed from the thread that
+// created them, protected by internal guard logic.
+unsafe impl Send for WindowsGuard {}
+unsafe impl Sync for WindowsGuard {}
 
 #[cfg(test)]
 mod tests {

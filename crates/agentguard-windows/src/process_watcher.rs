@@ -14,8 +14,16 @@ mod windows_impl {
     use std::sync::Arc;
     use tokio::sync::{mpsc, RwLock};
     use windows::core::GUID;
-    use windows::Win32::Foundation::*;
-    use windows::Win32::System::Diagnostics::Etw::*;
+    use windows::Win32::Foundation::{WIN32_ERROR, ERROR_ALREADY_EXISTS};
+    use windows::Win32::System::Diagnostics::Etw::{
+        TRACEHANDLE, EVENT_TRACE_LOGFILEW, OpenTraceW,
+        StartTraceW, ProcessTrace, CloseTrace,
+        EnableTraceEx2, ControlTraceW,
+        EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_INFORMATION,
+        WNODE_FLAG_TRACED_GUID, EVENT_TRACE_REAL_TIME_MODE,
+        PROCESS_TRACE_MODE_REAL_TIME, PROCESS_TRACE_MODE_EVENT_RECORD,
+        EVENT_TRACE_CONTROL_STOP, EVENT_RECORD, EVENT_TRACE_PROPERTIES,
+    };
 
     use agentguard_core::config::Config;
     use agentguard_core::SecurityEvent;
@@ -78,7 +86,7 @@ mod windows_impl {
                     props,
                 );
 
-                if result == ERROR_ALREADY_EXISTS.0 {
+                if result == ERROR_ALREADY_EXISTS {
                     tracing::debug!("ETW session already exists, reconnecting...");
                     ControlTraceW(
                         TRACEHANDLE(0),
@@ -92,8 +100,8 @@ mod windows_impl {
                         props,
                     )
                     .ok()?;
-                } else if result != 0 {
-                    anyhow::bail!("StartTraceW failed: {}", result);
+                } else if result != WIN32_ERROR(0) {
+                    anyhow::bail!("StartTraceW failed: {:?}", result);
                 }
 
                 EnableTraceEx2(
@@ -211,7 +219,7 @@ mod windows_impl {
 
     pub async fn start_polling(config: Arc<RwLock<Config>>, event_tx: mpsc::Sender<SecurityEvent>) {
         use sysinfo::Pid;
-        use sysinfo::{ProcessRefreshKind, RefreshKind, System};
+        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System};
 
         let mut system = System::new_with_specifics(
             RefreshKind::new()
@@ -223,6 +231,7 @@ mod windows_impl {
 
         loop {
             system.refresh_processes_specifics(
+                ProcessesToUpdate::All,
                 ProcessRefreshKind::new().with_cmd(Default::default()),
             );
 

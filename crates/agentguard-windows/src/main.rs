@@ -225,7 +225,7 @@ async fn run_as_service(_args: Args) -> Result<()> {
             },
         ];
 
-        if StartServiceCtrlDispatcherW(&table).is_err() {
+        if StartServiceCtrlDispatcherW(table.as_ptr()).is_err() {
             error!("StartServiceCtrlDispatcherW failed — is the service registered?");
             anyhow::bail!(
                 "StartServiceCtrlDispatcherW failed. Run `sc.exe create AgentGuard ...` first."
@@ -246,28 +246,32 @@ mod service_globals {
     use std::cell::UnsafeCell;
     use windows::Win32::System::Services::SERVICE_STATUS_HANDLE;
 
+    struct ServiceHandleWrapper(UnsafeCell<SERVICE_STATUS_HANDLE>);
+    unsafe impl Sync for ServiceHandleWrapper {}
+
     /// Handle del servicio registrado en el SCM.
     /// Solo se escribe una vez al registrarse y se lee desde el control handler.
-    static HANDLE: UnsafeCell<SERVICE_STATUS_HANDLE> = UnsafeCell::new(SERVICE_STATUS_HANDLE(0));
+    static HANDLE: ServiceHandleWrapper =
+        ServiceHandleWrapper(UnsafeCell::new(SERVICE_STATUS_HANDLE(std::ptr::null_mut())));
 
     pub fn set(h: SERVICE_STATUS_HANDLE) {
         unsafe {
-            *HANDLE.get() = h;
+            *HANDLE.0.get() = h;
         }
     }
 
     pub fn get() -> SERVICE_STATUS_HANDLE {
-        unsafe { *HANDLE.get() }
+        unsafe { *HANDLE.0.get() }
     }
 }
 
 #[cfg(windows)]
-extern "system" fn service_main_entry(_argc: u32, _argv: *mut *mut u16) {
+extern "system" fn service_main_entry(_argc: u32, _argv: *mut windows::core::PWSTR) {
     use windows::Win32::Foundation::NO_ERROR;
     use windows::Win32::System::Services::{
         RegisterServiceCtrlHandlerExW, SetServiceStatus, SERVICE_ACCEPT_PAUSE_CONTINUE,
         SERVICE_ACCEPT_STOP, SERVICE_RUNNING, SERVICE_START_PENDING, SERVICE_STATUS,
-        SERVICE_STOPPED,
+        SERVICE_STOPPED, SERVICE_WIN32_OWN_PROCESS,
     };
 
     let service_name: Vec<u16> = "AgentGuard\0".encode_utf16().collect();
@@ -276,7 +280,7 @@ extern "system" fn service_main_entry(_argc: u32, _argv: *mut *mut u16) {
         let handle = RegisterServiceCtrlHandlerExW(
             windows::core::PCWSTR(service_name.as_ptr()),
             Some(service_control_handler),
-            std::ptr::null_mut(),
+            None,
         );
 
         let result = match handle {
@@ -285,7 +289,7 @@ extern "system" fn service_main_entry(_argc: u32, _argv: *mut *mut u16) {
 
                 // Reportar START_PENDING
                 let mut status = SERVICE_STATUS {
-                    dwServiceType: 0x10, // SERVICE_WIN32_OWN_PROCESS
+                    dwServiceType: SERVICE_WIN32_OWN_PROCESS, // SERVICE_WIN32_OWN_PROCESS
                     dwCurrentState: SERVICE_START_PENDING,
                     dwControlsAccepted: SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_PAUSE_CONTINUE,
                     dwWin32ExitCode: NO_ERROR.0 as u32,
@@ -301,7 +305,7 @@ extern "system" fn service_main_entry(_argc: u32, _argv: *mut *mut u16) {
                     Err(e) => {
                         error!(error = %e, "failed to create tokio runtime");
                         let mut stopped_status = SERVICE_STATUS {
-                            dwServiceType: 0x10,
+                            dwServiceType: SERVICE_WIN32_OWN_PROCESS,
                             dwCurrentState: SERVICE_STOPPED,
                             dwControlsAccepted: 0,
                             dwWin32ExitCode: 0x0000_040F, // ERROR_SERVICE_SPECIFIC_ERROR
@@ -322,7 +326,7 @@ extern "system" fn service_main_entry(_argc: u32, _argv: *mut *mut u16) {
 
                     // Reportar RUNNING antes de entrar al loop
                     let mut running_status = SERVICE_STATUS {
-                        dwServiceType: 0x10,
+                        dwServiceType: SERVICE_WIN32_OWN_PROCESS,
                         dwCurrentState: SERVICE_RUNNING,
                         dwControlsAccepted: SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_PAUSE_CONTINUE,
                         dwWin32ExitCode: NO_ERROR.0 as u32,
@@ -354,7 +358,7 @@ extern "system" fn service_main_entry(_argc: u32, _argv: *mut *mut u16) {
 
                 // Reportar STOPPED
                 let mut stopped_status = SERVICE_STATUS {
-                    dwServiceType: 0x10,
+                    dwServiceType: SERVICE_WIN32_OWN_PROCESS,
                     dwCurrentState: SERVICE_STOPPED,
                     dwControlsAccepted: 0,
                     dwWin32ExitCode: NO_ERROR.0 as u32,
@@ -372,12 +376,17 @@ extern "system" fn service_main_entry(_argc: u32, _argv: *mut *mut u16) {
 }
 
 #[cfg(windows)]
-extern "system" fn service_control_handler(control: u32) -> u32 {
+extern "system" fn service_control_handler(
+    control: u32,
+    _event_type: u32,
+    _event_data: *mut core::ffi::c_void,
+    _context: *mut core::ffi::c_void,
+) -> u32 {
     use windows::Win32::Foundation::NO_ERROR;
     use windows::Win32::System::Services::{
-        SERVICE_CONTROL_CONTINUE, SERVICE_CONTROL_INTERROGATE, SERVICE_CONTROL_PAUSE,
-        SERVICE_CONTROL_STOP, SERVICE_PAUSED, SERVICE_RUNNING, SERVICE_STATUS,
-        SERVICE_STOP_PENDING,
+        SetServiceStatus, SERVICE_CONTROL_CONTINUE, SERVICE_CONTROL_INTERROGATE,
+        SERVICE_CONTROL_PAUSE, SERVICE_CONTROL_STOP, SERVICE_PAUSED, SERVICE_RUNNING,
+        SERVICE_STATUS, SERVICE_STOP_PENDING, SERVICE_WIN32_OWN_PROCESS,
     };
 
     unsafe {
@@ -385,7 +394,7 @@ extern "system" fn service_control_handler(control: u32) -> u32 {
             SERVICE_CONTROL_STOP => {
                 info!("SERVICE_CONTROL_STOP received — shutting down");
                 let mut status = SERVICE_STATUS {
-                    dwServiceType: 0x10,
+                    dwServiceType: SERVICE_WIN32_OWN_PROCESS,
                     dwCurrentState: SERVICE_STOP_PENDING,
                     dwControlsAccepted: 0,
                     dwWin32ExitCode: NO_ERROR.0 as u32,
@@ -400,7 +409,7 @@ extern "system" fn service_control_handler(control: u32) -> u32 {
             SERVICE_CONTROL_PAUSE => {
                 info!("SERVICE_CONTROL_PAUSE received — pausing");
                 let mut status = SERVICE_STATUS {
-                    dwServiceType: 0x10,
+                    dwServiceType: SERVICE_WIN32_OWN_PROCESS,
                     dwCurrentState: SERVICE_PAUSED,
                     dwControlsAccepted: 0x01 | 0x02,
                     dwWin32ExitCode: NO_ERROR.0 as u32,
@@ -414,7 +423,7 @@ extern "system" fn service_control_handler(control: u32) -> u32 {
             SERVICE_CONTROL_CONTINUE => {
                 info!("SERVICE_CONTROL_CONTINUE received — resuming");
                 let mut status = SERVICE_STATUS {
-                    dwServiceType: 0x10,
+                    dwServiceType: SERVICE_WIN32_OWN_PROCESS,
                     dwCurrentState: SERVICE_RUNNING,
                     dwControlsAccepted: 0x01 | 0x02,
                     dwWin32ExitCode: NO_ERROR.0 as u32,

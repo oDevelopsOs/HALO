@@ -15,7 +15,10 @@ mod windows_impl {
     use std::path::Path;
     use windows::Win32::Foundation::*;
     use windows::Win32::Security::Authorization::*;
-    use windows::Win32::Security::*;
+    use windows::Win32::Security::{
+        CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
+        PSID, FreeSid,
+    };
     use windows::Win32::Storage::FileSystem::*;
     use windows::Win32::System::Threading::*;
 
@@ -61,16 +64,16 @@ mod windows_impl {
                 let mut app_container_sid: PSID = PSID::default();
 
                 let hr = CreateAppContainerProfile(
-                    windows::core::PCWSTR(container_name.as_ptr()),
-                    windows::core::PCWSTR(display_name.as_ptr()),
-                    windows::core::PCWSTR(description.as_ptr()),
+                    PCWSTR(container_name.as_ptr()),
+                    PCWSTR(display_name.as_ptr()),
+                    PCWSTR(description.as_ptr()),
                     None,
                     &mut app_container_sid,
                 );
 
-                if hr.is_err() {
+                if hr != WIN32_ERROR(0) {
                     DeriveAppContainerSidFromAppContainerName(
-                        windows::core::PCWSTR(container_name.as_ptr()),
+                        PCWSTR(container_name.as_ptr()),
                         &mut app_container_sid,
                     )
                     .map_err(|e| anyhow::anyhow!("Cannot get AppContainer SID: {:?}", e))?;
@@ -139,13 +142,13 @@ mod windows_impl {
                 // 7. Crear el proceso en AppContainer
                 CreateProcessW(
                     None,
-                    windows::core::PWSTR(cmd_line.as_mut_ptr()),
+                    PWSTR(cmd_line.as_mut_ptr()),
                     None,
                     None,
                     false,
                     EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_CONSOLE,
                     Some(env_block.as_ptr() as *const std::ffi::c_void),
-                    windows::core::PCWSTR(project_str.as_ptr()),
+                    PCWSTR(project_str.as_ptr()),
                     &startup_info.StartupInfo as *const _ as *const STARTUPINFOW,
                     &mut process_info,
                 )
@@ -191,8 +194,8 @@ mod windows_impl {
             let mut dacl: *mut ACL = std::ptr::null_mut();
             let mut sd: PSECURITY_DESCRIPTOR = PSECURITY_DESCRIPTOR::default();
 
-            GetNamedSecurityInfoW(
-                windows::core::PCWSTR(path_wide.as_ptr()),
+            let hr = GetNamedSecurityInfoW(
+                PCWSTR(path_wide.as_ptr()),
                 SE_FILE_OBJECT,
                 DACL_SECURITY_INFORMATION,
                 None,
@@ -200,11 +203,13 @@ mod windows_impl {
                 Some(&mut dacl),
                 None,
                 &mut sd,
-            )
-            .map_err(|e| SandboxError::AceApplication {
-                path: path.display().to_string(),
-                err: format!("{:?}", e),
-            })?;
+            );
+            if hr != WIN32_ERROR(0) {
+                return Err(SandboxError::AceApplication {
+                    path: path.display().to_string(),
+                    err: format!("GetNamedSecurityInfoW failed: 0x{:08x}", hr.0),
+                });
+            }
 
             let mut ea = EXPLICIT_ACCESS_W::default();
             ea.grfAccessPermissions = FILE_ALL_ACCESS.0;
@@ -212,29 +217,32 @@ mod windows_impl {
             ea.grfInheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
             ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
             ea.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
-            ea.Trustee.ptstrName = windows::core::PWSTR(container_sid.0 as *mut u16);
+            ea.Trustee.ptstrName = PWSTR(container_sid.0 as *mut u16);
 
             let mut new_dacl: *mut ACL = std::ptr::null_mut();
-            SetEntriesInAclW(Some(&[ea]), Some(dacl), &mut new_dacl).map_err(|e| {
-                SandboxError::AceApplication {
+            let hr = SetEntriesInAclW(Some(&[ea]), Some(dacl), &mut new_dacl);
+            if hr != WIN32_ERROR(0) {
+                return Err(SandboxError::AceApplication {
                     path: path.display().to_string(),
-                    err: format!("{:?}", e),
-                }
-            })?;
+                    err: format!("SetEntriesInAclW failed: 0x{:08x}", hr.0),
+                });
+            }
 
-            SetNamedSecurityInfoW(
-                windows::core::PCWSTR(path_wide.as_ptr()),
+            let hr = SetNamedSecurityInfoW(
+                PCWSTR(path_wide.as_ptr()),
                 SE_FILE_OBJECT,
                 DACL_SECURITY_INFORMATION,
                 None,
                 None,
                 Some(new_dacl),
                 None,
-            )
-            .map_err(|e| SandboxError::AceApplication {
-                path: path.display().to_string(),
-                err: format!("{:?}", e),
-            })?;
+            );
+            if hr != WIN32_ERROR(0) {
+                return Err(SandboxError::AceApplication {
+                    path: path.display().to_string(),
+                    err: format!("SetNamedSecurityInfoW failed: 0x{:08x}", hr.0),
+                });
+            }
 
             LocalFree(HLOCAL(new_dacl as *mut std::ffi::c_void));
             LocalFree(HLOCAL(sd.0));
