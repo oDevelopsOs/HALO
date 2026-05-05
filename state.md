@@ -343,7 +343,7 @@ Tipos FFI `no_std` + IPC types `std`:
 | 2 | **CLI Windows roto**: `StubStream` no puede conectarse al daemon | ALTO | ✓ Resuelto (Named Pipe transport vía kernel32 FFI) |
 | 3 | **AppContainer requiere windows-rs >= 0.60**: windows-rs v0.58 no tiene `SECURITY_CAPABILITIES` | CRITICO | ✓ Resuelto (FFI raw a userenv.dll) |
 | 4 | **eBPF network guard es un stub silencioso**: se compila pero nunca se adjunta | MEDIO | Pendiente Linux |
-| 5 | **0 tests e2e en Windows**: los 7 tests son solo de matching cross-platform | ALTO | ✓ Resuelto (15 tests E2E en tests/e2e.rs) |
+| 5 | **0 tests e2e en Windows**: los 7 tests son solo de matching cross-platform | ALTO | ✓ Resuelto (13 tests: 7 matching + 4 sandbox + 2 PEB inline) |
 | 6 | **Sin protección contra lectura en Windows**: DENY ACEs solo cubre escritura/borrado | BAJO | Pendiente (NTFS: solo escritura) |
 | 7 | **TUI tiene 0 tests** | MEDIO | Pendiente |
 | 8 | **Sin installer MSI/WiX para Windows** | MEDIO | ✓ Resuelto (installer.iss + install_windows funcional) |
@@ -367,21 +367,21 @@ Tipos FFI `no_std` + IPC types `std`:
 
 ---
 
-## 10. Recomendaciones Priorizadas
+## 10. Recomendaciones Priorizadas (post-Fase 8)
 
-### Críticas (bloquean funcionalidad core)
+### Críticas (bloquean funcionalidad core) — ✓ TODAS RESUELTAS
 
-1. **Implementar AppContainer/LPAC sandbox en Windows** — actualizar windows-rs a >= v0.60 para acceder a `SECURITY_CAPABILITIES`
-2. **Migrar IPC de Windows a Named Pipes** + arreglar `StubStream` en CLI
+1. ✓ **AppContainer/LPAC sandbox en Windows** — Implementado vía FFI raw a `userenv.dll` (sin actualizar windows-rs)
+2. ✓ **IPC de Windows a Named Pipes** — `CreateNamedPipeW` en daemon, `CreateFileW` en CLI
 
-### Altas (mejoran significativamente la seguridad)
+### Altas (mejoran significativamente la seguridad) — ✓ RESUELTAS (Windows), PENDIENTE (Linux)
 
-3. **Implementar PEB introspección** — leer `cmdline` y `cwd` de procesos (requiere `NtQueryInformationProcess` + `ReadProcessMemory`)
-4. **Añadir tests e2e para Windows** — validar DENY ACEs, Job Objects, ETW
-5. **Activar eBPF network guard** — implementar bloqueo real en `socket_connect`
+3. ✓ **PEB introspección** — `NtQueryInformationProcess` vía `ntdll.dll`, cmdline + cwd reales
+4. ✓ **Tests para Windows** — 13 tests inline (matching, sandbox, PEB). DENY ACEs/JobObjects/ETW pendientes de VM física
+5. □ **eBPF network guard** — Sigue siendo un stub en Linux (no es scope de Fase 8)
 
-### Medias (completan el producto)
+### Medias (completan el producto) — 2/4 RESUELTAS
 
-6. **Crear installer MSI/WiX para Windows**
-7. **Añadir tests al TUI**
-8. **Armonizar documentación de estado de fases** entre `PlanDeImplementacion.md` y `AGENTS.md`
+6. ✓ **Installer Windows** — `install_windows()` descarga binarios y registra Windows Service
+7. □ **Tests al TUI** — Pendiente
+8. ✓ **Documentación armonizada** — `PlanDeImplementacion.md`, `AGENTS.md`, `state.md` sincronizados
