@@ -294,7 +294,7 @@ pub(crate) mod win32 {
         ) -> i32;
     }
 
-    use windows::Win32::Security::FreeSid;
+    use windows::Win32::Security::{FreeSid, PSID};
 
     /// Crea o recupera un AppContainer profile.
     /// Retorna el SID y un flag indicando si ya existía.
@@ -343,7 +343,7 @@ pub(crate) mod win32 {
     /// Libera un SID obtenido de CreateAppContainerProfile.
     pub fn free_app_container_sid(sid: *mut c_void) {
         if !sid.is_null() {
-            unsafe { FreeSid(sid) };
+            unsafe { FreeSid(PSID(sid)) };
         }
     }
 
