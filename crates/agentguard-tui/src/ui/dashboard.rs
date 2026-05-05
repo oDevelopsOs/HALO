@@ -30,7 +30,7 @@ fn render_banner(f: &mut Frame, state: &AppState, area: Rect) {
     let status = if state.daemon.paused {
         ("⏸  PROTECTION PAUSED", theme::WARNING)
     } else if state.daemon.connected {
-        ("🛡  PROTECTED", theme::ACCENT)
+        ("🛡  PROTECTED", theme::SUCCESS)
     } else {
         ("⚠  NOT PROTECTED", theme::DANGER)
     };
@@ -48,8 +48,16 @@ fn render_banner(f: &mut Frame, state: &AppState, area: Rect) {
         state.daemon.sandbox_mode.as_deref().unwrap_or("N/A"),
     );
 
+    let style = if status.1 == theme::WARNING {
+        theme::warning_style()
+    } else if status.1 == theme::SUCCESS {
+        theme::accent_style()
+    } else {
+        theme::danger_style()
+    };
+
     let banner = Paragraph::new(format!("    {}\n    {}", status.0, subtitle,))
-        .style(ratatui::style::Style::default().fg(status.1))
+        .style(style)
         .block(Block::default().borders(Borders::NONE));
 
     f.render_widget(banner, area);

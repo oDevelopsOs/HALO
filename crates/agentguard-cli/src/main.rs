@@ -1009,4 +1009,22 @@ mod tests {
         #[cfg(windows)]
         assert!(!p.to_string_lossy().is_empty());
     }
+
+    #[test]
+    fn ipc_wire_format_is_json_line() {
+        use agentguard_common::{IpcCommand, IpcResponse};
+        let cmd = IpcCommand::Ping;
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(!json.contains('\n'), "IPC command should be single-line JSON");
+        assert!(json.starts_with('{'), "IPC command should be JSON object");
+        let pong = IpcResponse::Pong;
+        let pong_json = serde_json::to_string(&pong).unwrap();
+        assert!(pong_json.contains("Pong"));
+        let err = IpcResponse::Error {
+            message: "connection refused".to_string(),
+        };
+        let err_json = serde_json::to_string(&err).unwrap();
+        assert!(err_json.contains("Error"));
+        assert!(err_json.contains("connection refused"));
+    }
 }

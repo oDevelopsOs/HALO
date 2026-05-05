@@ -17,6 +17,15 @@
 //!    por nombre de ejecutable, línea de comandos (argv) y variables de
 //!    entorno.
 //!
+//! ## Limitación: sin protección contra lectura
+//!
+//! NTFS DENY ACEs solo previenen escritura, borrado y modificación de
+//! atributos. Un atacante PUEDE leer archivos en directorios protegidos.
+//! En Linux, eBPF LSM puede bloquear `file_open` para lectura también,
+//! pero Windows no ofrece un equivalente sin un driver de minifilter
+//! firmado. La protección contra lectura en Windows requeriría un driver
+//! kernel firmado con EV certificate (fuera del alcance del MVP).
+//!
 //! Este módulo compila en cualquier plataforma pero el backend real
 //! solo funciona en Windows. En Linux se provee un stub que
 //! retorna error al intentar cualquier operación.

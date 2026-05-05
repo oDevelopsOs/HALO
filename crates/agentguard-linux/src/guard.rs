@@ -15,12 +15,23 @@ use agentguard_core::{GuardError, KernelGuard};
 pub async fn select_guard(
     protected_paths: &[PathBuf],
     protected_files: &[PathBuf],
+    dlp_enabled: bool,
 ) -> Result<Box<dyn KernelGuard>, GuardError> {
     #[cfg(feature = "ebpf")]
     {
         match ebpf::EbpfGuard::try_load(protected_paths, protected_files).await {
-            Ok(guard) => {
+            Ok(mut guard) => {
                 tracing::info!(backend = "ebpf", "kernel-level protection active");
+                // If DLP proxy is enabled, activate network restriction at kernel level.
+                // This blocks non-localhost outbound connections from ALL processes,
+                // forcing traffic through the DLP proxy on 127.0.0.1.
+                if dlp_enabled {
+                    if let Err(e) = guard.set_network_restricted(true) {
+                        tracing::warn!(error = %e, "failed to enable network restriction");
+                    } else {
+                        tracing::info!("ebpf network restriction enabled (DLP mode)");
+                    }
+                }
                 return Ok(Box::new(guard));
             }
             Err(e) => {

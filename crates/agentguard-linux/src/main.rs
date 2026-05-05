@@ -210,7 +210,12 @@ async fn main() -> Result<()> {
     }
 
     // ── Guard (eBPF o userspace) ────────────────────────────
-    let guard = select_guard(&config.protected_dirs, &config.protected_files).await?;
+    let guard = select_guard(
+        &config.protected_dirs,
+        &config.protected_files,
+        config.dlp.enabled,
+    )
+    .await?;
     let guard_backend_name = guard.backend_name().to_string();
     let guard_level = format!("{:?}", guard.protection_level());
     info!(

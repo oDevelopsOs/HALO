@@ -110,6 +110,30 @@ impl SandboxLauncher {
             "--unshare-cgroup-try",
         ]);
 
+        // ── Seccomp (TODO) ─────────────────────────────────────────────────
+        // Para reducir la superficie de ataque del kernel, se puede añadir
+        // un filtro seccomp-bpf que bloquee syscalls peligrosas:
+        //
+        //   --seccomp <FD>
+        //
+        // El filtro debe compilarse con libseccomp o escribirse en BPF raw:
+        //   sudo apt install libseccomp-dev
+        //   echo 'mount: 1; ptrace: 1; bpf: 1; unshare: 1' \
+        //     | scmp_bpf_disasm > seccomp_filter.bpf
+        //
+        // Syscalls a bloquear en el sandbox:
+        //   - mount, umount2: prevenir remounts del filesystem
+        //   - ptrace: prevenir attachment a otros procesos
+        //   - bpf: prevenir carga de programas eBPF adicionales
+        //   - unshare: prevenir escape del namespace
+        //   - kexec_load, kexec_file_load: prevenir reemplazo del kernel
+        //   - delete_module, init_module, finit_module: prevenir carga de módulos
+        //
+        // El FD debe pasarse como descriptor de archivo abierto al bwrap:
+        //   let fd = std::fs::File::open("seccomp_filter.bpf")?;
+        //   cmd.arg("--seccomp");
+        //   cmd.arg(fd.as_raw_fd().to_string());
+
         if self.config.sandbox.morir_con_padre {
             cmd.arg("--die-with-parent");
         }
