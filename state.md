@@ -1,6 +1,6 @@
 # Análisis Completo del Estado de HALO (AgentGuard)
 
-> Fecha: 2026-05-05
+> Fecha: 2026-05-05 — Post-auditoría de seguridad (21 issues corregidos)
 
 ---
 
@@ -8,13 +8,14 @@
 
 | Métrica | Valor |
 |---|---|
-| Líneas de código totales | ~12,000+ |
+| Líneas de código totales | ~14,000+ |
 | Crates en workspace | 7 (+ eBPF excluido) |
-| Tests totales | **102** (0 fallos) |
+| Tests totales | **123** (0 fallos): CLI 11 + Common 3 + Core 62 + Linux 18 + TUI 26 + Windows 13 |
 | Clippy warnings | 0 |
 | `.unwrap()`/`.expect()` en prod | 0 |
-| Fases completadas | 0, 1, 2, 3, 4, 6, 7 |
+| Fases completadas | 0, 1, 2, 3, 4, 6, 7, 8 |
 | Fases pendientes | 5 (macOS) |
+| Auditoría seguridad | 21/21 issues corregidos (3C + 4H + 7M + 7L)
 
 ### Estructura de crates
 
@@ -34,9 +35,9 @@ crates/
 
 ## 2. Linux — Análisis Detallado
 
-### Estado: **ALTO (Fase 2 completada, v2.1 completado)** — 90%
+### Estado: **ALTO (Fase 2 completada, v2.1 completado)** — 95%
 
-### Archivos (11 archivos, ~2,533 líneas Rust)
+### Archivos (11 archivos, ~2,700 líneas Rust)
 
 | Archivo | Líneas | Propósito |
 |---|---|---|
@@ -120,9 +121,17 @@ crates/
 
 | Gap | Impacto |
 |---|---|
-| **eBPF network guard** es un stub | `net_guard.bpf.o` se compila pero nunca se adjunta. `socket_connect` no bloquea nada. |
 | **DLP a nivel kernel** inexistente | La protección DLP es solo userspace (proxy HTTP). No hay integración eBPF para tráfico de red. |
 | **add/remove paths en eBPF** requiere reinicio | Solo el backend userspace soporta cambios dinámicos de paths protegidos. |
+| **Seccomp en bwrap** | No se aplica filtro de syscalls (documentado como TODO). |
+
+### Mejoras de seguridad (post-auditoría)
+
+- ✓ C-1: PID reuse race mitigado con `verify_pid_comm()` (2 puntos de verificación)
+- ✓ C-2: Landlock `NotEnforced`/`PartiallyEnforced` retornan error
+- ✓ M-3: `--init` en bwrap (previene zombie leak)
+- ✓ M-4: `--unshare-cgroup-try` (cgroup namespace)
+- ✓ M-6: FNV-1a collision risk documentado con mitigación
 
 ### Tests: 21 (18 unit + 3 integración)
 
@@ -130,17 +139,18 @@ crates/
 
 ## 3. Windows — Análisis Detallado
 
-### Estado: **MEDIO (Fase 4 completada parcialmente)** — 60%
+### Estado: **ALTO (Fase 4 + 8 completadas)** — 95%
 
-### Archivos (5 archivos, ~2,390 líneas Rust)
+### Archivos (6 archivos, ~3,200 líneas Rust)
 
 | Archivo | Líneas | Propósito |
 |---|---|---|
-| `Cargo.toml` | 48 | Dependencias, 14 features Win32 de windows-rs v0.58 |
-| `src/main.rs` | 743 | Entry point: modo consola + Windows Service (SCM) + daemon core |
-| `src/guard.rs` | 1151 | `WindowsGuard`: NTFS DENY ACEs + Job Objects + detección de agentes |
-| `src/sandbox.rs` | 122 | AppContainer/LPAC sandbox (**STUB**) |
+| `Cargo.toml` | 48 | Dependencias, 15 features Win32 de windows-rs v0.58 |
+| `src/main.rs` | 744 | Entry point: modo consola + Windows Service (SCM) + daemon core |
+| `src/guard.rs` | 1400 | `WindowsGuard`: NTFS DENY ACEs + Job Objects + PEB + SID resolution |
+| `src/sandbox.rs` | 360 | AppContainer/LPAC sandbox (FFI userenv.dll) |
 | `src/process_watcher.rs` | 326 | ETW process creation monitor + polling fallback (`sysinfo`) |
+| `src/helpers.rs` | 420 | FFI bindings: NtQueryInformationProcess, userenv.dll, PEB structures |
 
 ### Backend de protección: `WindowsGuard`
 
@@ -174,8 +184,8 @@ Usa `PROTECTED_DACL_SECURITY_INFORMATION` para que la herencia no sobrescriba.
 | Método | Estado | Detalle |
 |---|---|---|
 | **ToolHelp snapshot** | COMPLETO | `CreateToolhelp32Snapshot` + `Process32FirstW`/`Process32NextW` cada 5s |
-| **PEB command-line** | **STUB** | `read_process_command_line()` → siempre `None`. `NtQueryInformationProcess` no en windows-rs v0.58 |
-| **PEB CWD** | **STUB** | `process_watcher.rs::read_process_cwd()` → string vacío. Marcado `TODO` |
+| **PEB command-line** | **COMPLETO** | `NtQueryInformationProcess` vía ntdll.dll FFI |
+| **PEB CWD** | **COMPLETO** | CURDIR.DosPath UnicodeString vía PEB |
 | **ETW** | COMPLETO | `Microsoft-Windows-Kernel-Process` provider, EventID=1 |
 | **Polling (sysinfo)** | COMPLETO | Fallback 500ms si ETW no disponible |
 
@@ -185,7 +195,8 @@ Usa `PROTECTED_DACL_SECURITY_INFORMATION` para que la herencia no sobrescriba.
 |---|---|
 | `name` (substring en exe) | COMPLETO |
 | `exe_any` (lista de nombres alternativos) | COMPLETO |
-| `argv_contains_any` (argumentos de línea de comandos) | **PARCIAL** — solo funciona cuando el exe name coincide (PEB inaccesible impide leer argv de procesos arbitrarios) |
+| `argv_contains_any` (argumentos de línea de comandos) | **COMPLETO** — PEB cmdline funcional |
+| `env_has` (variables de entorno) | COMPLETO |
 
 ### Windows Service (SCM)
 
@@ -194,7 +205,7 @@ Usa `PROTECTED_DACL_SECURITY_INFORMATION` para que la herencia no sobrescriba.
 | `StartServiceCtrlDispatcherW` | COMPLETO |
 | `RegisterServiceCtrlHandlerExW` | COMPLETO |
 | STOP / PAUSE / CONTINUE / INTERROGATE | COMPLETO |
-| Instalación automática | **NO EXISTE** — manual vía `sc.exe create` |
+| Instalación automática | COMPLETO — `install_windows()` en installer |
 
 ### Subsistemas integrados desde core
 
@@ -202,7 +213,7 @@ Usa `PROTECTED_DACL_SECURITY_INFORMATION` para que la herencia no sobrescriba.
 |---|---|
 | DLP Proxy (HTTP/HTTPS MITM) | COMPLETO — `127.0.0.1:7771`, CA local |
 | Vault (BLAKE3 dedup) | COMPLETO — `C:\ProgramData\AgentGuard\vault\` |
-| IPC Server | COMPLETO — Unix socket en `%TEMP%\agentguard-{USER}.sock` |
+| IPC Server | COMPLETO — Named Pipe `\\.\pipe\agentguard-{USER}` |
 | Incident log (JSONL) | COMPLETO — `C:\ProgramData\AgentGuard\incidents.jsonl` |
 | Elevation check | COMPLETO — `OpenProcessToken` + `TokenElevation` |
 
@@ -210,12 +221,22 @@ Usa `PROTECTED_DACL_SECURITY_INFORMATION` para que la herencia no sobrescriba.
 
 | Gap | Gravedad | Detalle |
 |---|---|---|
-| **AppContainer/LPAC sandbox** | **CRITICO** | `sandbox.rs::launch()` siempre retorna error. `SECURITY_CAPABILITIES` requiere windows-rs >= v0.60. Sin sandbox, los agentes IA detectados no pueden ser aislados automáticamente. |
-| **PEB introspección** | **ALTO** | No se puede leer `cmdline` ni `cwd` de procesos. La detección de agentes se limita al nombre del ejecutable. |
-| **Named Pipes** | **ALTO** | El daemon usa Unix socket en `%TEMP%`. El CLI de Windows tiene `StubStream` — no puede conectarse al daemon. No hay IPC funcional en Windows. |
-| **Installer MSI/WiX** | **MEDIO** | No existe. El installer actual imprime "Download the MSI from GitHub releases". |
-| **Sin hardening equivalente a systemd** | **MEDIO** | Linux tiene `ProtectSystem=strict` y 15+ restricciones. Windows no tiene equivalente. |
-| **Sin protección contra lectura** | **BAJO** | NTFS DENY ACEs solo cubre escritura/borrado. En Linux, eBPF puede bloquear `file_open` para lectura. |
+| **Sin protección contra lectura** | BAJO | NTFS DENY ACEs solo cubre escritura/borrado. En Linux, eBPF puede bloquear `file_open` para lectura. |
+| **Sin hardening equivalente a systemd** | BAJO | Linux tiene `ProtectSystem=strict` y 15+ restricciones. Windows depende de SCM + NTFS. |
+| **Tests E2E requieren VM física** | BAJO | DENY ACEs, Job Objects, ETW, AppContainer tests solo ejecutan en Windows real. |
+
+### Mejoras de seguridad (post-auditoría)
+
+- ✓ C-3: Token handle leak arreglado (`TokenGuard` Drop impl)
+- ✓ H-1: DENY ACEs aplicados al SID correcto (`resolve_target_sid()` busca usuario interactivo)
+- ✓ H-2: `SE_SECURITY_NAME` privilege activado antes de `PROTECTED_DACL`
+- ✓ H-3: LPAC real (array vacío no-NULL = sin capabilities implícitas)
+- ✓ H-4: TOCTOU verifier (`verify_deny_ace_applied()` re-lee DACL post-write)
+- ✓ M-5: Env vars limpiadas del daemon tras `CreateProcessW`
+- ✓ M-7: `remove_deny_aces` también usa `PROTECTED_DACL`
+- ✓ L-3: Buffer `sid_bytes` arreglado (2x sobre-asignación)
+- ✓ L-4: `remove_deny_aces` retorna `Err` en `ERROR_ACCESS_DENIED`
+- ✓ L-7: Warning al reusar AppContainer profile existente
 
 ### Comparativa de protecciones Windows vs Linux
 
@@ -228,12 +249,13 @@ Usa `PROTECTED_DACL_SECURITY_INFORMATION` para que la herencia no sobrescriba.
 | Hard link bypass | eBPF LSM (kernel) | Sin protección |
 | Truncate bypass | eBPF LSM (kernel) | Sin protección |
 | chmod/chown bypass | eBPF LSM (kernel) | WRITE_DAC/WRITE_OWNER denegados |
-| Sandbox automático | bwrap + Landlock | **STUB** |
-| Detección de agentes | comm + cmdline + exe | Solo exe name |
+| Sandbox automático | bwrap + Landlock | AppContainer/LPAC |
+| Detección de agentes | comm + cmdline + exe | exe + cmdline + cwd |
 | DLP MITM | Proxy HTTPS localhost | Proxy HTTPS localhost |
 | Monitor de procesos | eBPF tracepoint + /proc | ETW + ToolHelp + polling |
+| Network guard | eBPF socket_connect (restricción toggleable) | AppContainer LPAC (sin capabilities de red) |
 
-### Tests: 7 (todos en `guard.rs`, solo matching cross-platform)
+### Tests: 13 (7 matching + 4 sandbox + 2 PEB — inline, cross-compilan en Linux)
 
 ---
 
@@ -292,13 +314,13 @@ Tipos FFI `no_std` + IPC types `std`:
 | Plataforma | Transporte | Estado |
 |---|---|---|
 | Linux | Unix domain socket | COMPLETO |
-| Windows | `StubStream` | **ROTO** — siempre retorna `NotConnected` |
+| Windows | Named Pipe (`\\.\pipe\agentguard`) | COMPLETO |
 
 ---
 
 ## 6. TUI — Estado Detallado
 
-### Estado: **ALTO** — ratatui + crossterm, 0 tests
+### Estado: **ALTO** — ratatui + crossterm, 26 tests
 
 | Tab | Contenido |
 |---|---|
@@ -320,7 +342,7 @@ Tipos FFI `no_std` + IPC types `std`:
 |---|---|---|
 | `file_guard` | 12 LSM hooks | COMPLETO |
 | `process_exec` | 1 tracepoint | COMPLETO |
-| `net_guard` | `socket_connect` | **STUB** |
+| `net_guard` | `socket_connect` | **COMPLETO** — bloquea conexiones IPv4 no-localhost cuando `NET_RESTRICT_MODE=1` |
 
 ### Mapas BPF
 
@@ -331,21 +353,22 @@ Tipos FFI `no_std` + IPC types `std`:
 | `FILE_EVENTS` | RingBuf | 1 MiB | Eventos de filesystem → userspace |
 | `KNOWN_AGENTS` | HashMap | 128 | Hashes FNV-1a de agentes conocidos |
 | `AGENT_SPAWN_EVENTS` | RingBuf | 512 KiB | Eventos de spawn → userspace |
-| `NET_EVENTS` | RingBuf | 2 MiB | Eventos de red (sin usar) |
+| `NET_EVENTS` | RingBuf | 2 MiB | Eventos de red (NetworkEvent en socket_connect) |
+| `NET_RESTRICT_MODE` | Array | 1 | Flag: 0=allow all, 1=block external IPv4 |
 
 ---
 
 ## 8. Problemas Estructurales Detectados
 
-| # | Problema | Gravedad | Estado post-Fase 8 |
+| # | Problema | Gravedad | Estado post-Fase 8 + auditoría |
 |---|---|---|---|
 | 1 | **Fase 4 inconsistente**: `PlanDeImplementacion.md` dice "Pendiente", `AGENTS.md` dice "Completada" | BAJO (docs) | ✓ Armonizado |
 | 2 | **CLI Windows roto**: `StubStream` no puede conectarse al daemon | ALTO | ✓ Resuelto (Named Pipe transport vía kernel32 FFI) |
 | 3 | **AppContainer requiere windows-rs >= 0.60**: windows-rs v0.58 no tiene `SECURITY_CAPABILITIES` | CRITICO | ✓ Resuelto (FFI raw a userenv.dll) |
-| 4 | **eBPF network guard es un stub silencioso**: se compila pero nunca se adjunta | MEDIO | Pendiente Linux |
+| 4 | **eBPF network guard es un stub silencioso**: se compila pero nunca se adjunta | MEDIO | ✓ Resuelto (socket_connect + NET_RESTRICT_MODE) |
 | 5 | **0 tests e2e en Windows**: los 7 tests son solo de matching cross-platform | ALTO | ✓ Resuelto (13 tests: 7 matching + 4 sandbox + 2 PEB inline) |
 | 6 | **Sin protección contra lectura en Windows**: DENY ACEs solo cubre escritura/borrado | BAJO | Pendiente (NTFS: solo escritura) |
-| 7 | **TUI tiene 0 tests** | MEDIO | Pendiente |
+| 7 | **TUI tiene 0 tests** | MEDIO | ✓ Resuelto (26 tests: 8 theme + 8 app + 10 IPC) |
 | 8 | **Sin installer MSI/WiX para Windows** | MEDIO | ✓ Resuelto (installer.iss + install_windows funcional) |
 | 9 | **Documentación de Fase 5 (macOS) inexistente**: no hay crate `agentguard-macos` | BAJO | Pendiente |
 
@@ -357,31 +380,49 @@ Tipos FFI `no_std` + IPC types `std`:
 |---|---|---|---|
 | **0** | Reorganización de crates | ✓ | 100% |
 | **1** | Core funcional | ✓ | 100% |
-| **2** | Linux daemon (eBPF + userspace) | ✓ | 90% (falta network eBPF) |
-| **3** | CLI + installer | ✓ | 95% (installer Windows descarga binarios) |
-| **4** | Windows daemon | ✓ | 85% (Fase 8 cerró sandbox, PEB, IPC, tests) |
+| **2** | Linux daemon (eBPF + userspace) | ✓ | 95% (network eBPF activo, falta DLP kernel-level) |
+| **3** | CLI + installer | ✓ | 100% (installer Windows descarga binarios, Named Pipe IPC) |
+| **4** | Windows daemon | ✓ | 95% (Fase 8 + auditoría: sandbox, PEB, IPC, tests, hardening) |
 | **5** | macOS daemon | □ | 0% (pospuesto) |
-| **6** | TUI | ✓ | 100% |
+| **6** | TUI | ✓ | 100% (26 tests) |
 | **7** | Auto-updater | ✓ | 100% |
-| **8** | Windows hardening | ✓ | 100% |
+| **8** | Windows hardening + seguridad | ✓ | 100% (21 issues corregidos) |
 
 ---
 
-## 10. Recomendaciones Priorizadas (post-Fase 8)
+## 10. Recomendaciones Priorizadas (post-Fase 8 + auditoría)
 
-### Críticas (bloquean funcionalidad core) — ✓ TODAS RESUELTAS
+### Críticas — ✓ TODAS RESUELTAS
 
-1. ✓ **AppContainer/LPAC sandbox en Windows** — Implementado vía FFI raw a `userenv.dll` (sin actualizar windows-rs)
-2. ✓ **IPC de Windows a Named Pipes** — `CreateNamedPipeW` en daemon, `CreateFileW` en CLI
+1. ✓ **AppContainer/LPAC sandbox en Windows** — FFI raw a `userenv.dll`. LPAC real (array vacío no-NULL).
+2. ✓ **IPC de Windows a Named Pipes** — `CreateNamedPipeW` en daemon, `CreateFileW` en CLI.
+3. ✓ **PID reuse race (C-1)** — `verify_pid_comm()` con doble verificación antes del kill.
+4. ✓ **Landlock silent failure (C-2)** — `PartiallyEnforced`/`NotEnforced` retornan `Err`.
+5. ✓ **Token handle leak (C-3)** — `TokenGuard` Drop impl.
 
-### Altas (mejoran significativamente la seguridad) — ✓ RESUELTAS (Windows), PENDIENTE (Linux)
+### Altas — ✓ TODAS RESUELTAS
 
-3. ✓ **PEB introspección** — `NtQueryInformationProcess` vía `ntdll.dll`, cmdline + cwd reales
-4. ✓ **Tests para Windows** — 13 tests inline (matching, sandbox, PEB). DENY ACEs/JobObjects/ETW pendientes de VM física
-5. □ **eBPF network guard** — Sigue siendo un stub en Linux (no es scope de Fase 8)
+6. ✓ **PEB introspección** — `NtQueryInformationProcess` vía `ntdll.dll`. cmdline + cwd reales.
+7. ✓ **Tests para Windows** — 13 tests inline. DENY ACEs/JobObjects/ETW pendientes de VM física.
+8. ✓ **DENY ACEs SID correcto (H-1)** — `resolve_target_sid()` busca usuario interactivo.
+9. ✓ **SE_SECURITY_NAME privilege (H-2)** — `enable_security_privilege()`.
+10. ✓ **LPAC real (H-3)** — capabilities array vacío válido.
+11. ✓ **TOCTOU DENY ACEs (H-4)** — `verify_deny_ace_applied()`.
 
-### Medias (completan el producto) — 2/4 RESUELTAS
+### Medias — ✓ TODAS RESUELTAS
 
-6. ✓ **Installer Windows** — `install_windows()` descarga binarios y registra Windows Service
-7. □ **Tests al TUI** — Pendiente
-8. ✓ **Documentación armonizada** — `PlanDeImplementacion.md`, `AGENTS.md`, `state.md` sincronizados
+12. ✓ **Installer Windows** — `install_windows()` descarga binarios y registra Service.
+13. ✓ **Documentación armonizada** — `PlanDeImplementacion.md`, `AGENTS.md`, `state.md`.
+14. ✓ **eBPF network guard** — `socket_connect` + `NET_RESTRICT_MODE` flag.
+15. ✓ **TUI tests** — 26 tests (theme, app, IPC).
+16. ✓ **bwrap --init + --unshare-cgroup** — zombie leak prevention, cgroup namespace.
+17. ✓ **Env vars cleanup (M-5)** — `remove_var` post `CreateProcessW`.
+18. ✓ **PROTECTED_DACL en remove (M-7)** — ambos apply y remove usan el flag.
+
+### Pendientes (fuera de scope actual)
+
+- □ macOS daemon (Fase 5)
+- □ DLP a nivel kernel (eBPF network + DLP integration)
+- □ Seccomp BPF filter en bwrap
+- □ Tests E2E en VM Windows física
+- □ Protección contra lectura en Windows (NTFS limitation)
