@@ -234,6 +234,7 @@ pub(crate) mod win32 {
     }
 
     /// Abre un proceso por PID y lee su línea de comandos vía PEB.
+    #[allow(dead_code)] // used by tests only
     pub fn read_process_command_line_by_pid(pid: u32) -> Option<String> {
         let h = match open_process_for_peb(pid) {
             Ok(h) if !h.is_invalid() => h,
