@@ -40,3 +40,56 @@ pub fn warning_style() -> Style {
 pub fn accent_style() -> Style {
     Style::default().fg(ACCENT)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bg_color_matches_spec() {
+        assert_eq!(BG, Color::Rgb(15, 15, 15));
+    }
+
+    #[test]
+    fn accent_color_is_green() {
+        assert_eq!(ACCENT, Color::Rgb(34, 197, 94));
+    }
+
+    #[test]
+    fn danger_color_is_red() {
+        assert_eq!(DANGER, Color::Rgb(239, 68, 68));
+    }
+
+    #[test]
+    fn warning_color_is_amber() {
+        assert_eq!(WARNING, Color::Rgb(245, 158, 11));
+    }
+
+    #[test]
+    fn title_style_has_bold_and_accent() {
+        let s = title_style();
+        assert!(s.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(s.fg, Some(ACCENT));
+    }
+
+    #[test]
+    fn danger_style_has_bold_and_red() {
+        let s = danger_style();
+        assert!(s.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(s.fg, Some(DANGER));
+    }
+
+    #[test]
+    fn muted_style_is_gray() {
+        let s = muted_style();
+        assert_eq!(s.fg, Some(MUTED));
+        assert!(!s.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn heading_style_is_white_bold() {
+        let s = heading_style();
+        assert_eq!(s.fg, Some(TEXT));
+        assert!(s.add_modifier.contains(Modifier::BOLD));
+    }
+}

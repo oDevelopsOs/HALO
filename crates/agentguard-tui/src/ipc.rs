@@ -122,3 +122,113 @@ pub fn default_socket_path() -> PathBuf {
         .map(|h| h.join(".agentguard").join("agentguard.sock"))
         .unwrap_or_else(|| PathBuf::from("agentguard.sock"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn client_has_socket_path() {
+        let client = IpcClient::new(PathBuf::from("/tmp/test.sock"));
+        assert_eq!(
+            client.socket_path,
+            PathBuf::from("/tmp/test.sock")
+        );
+    }
+
+    #[test]
+    fn default_socket_path_ends_with_agentguard_sock() {
+        let p = default_socket_path();
+        assert!(p.ends_with("agentguard.sock"), "got: {p:?}");
+    }
+
+    #[test]
+    fn status_command_serializes() {
+        let cmd = IpcCommand::Status;
+        let json = serde_json::to_string(&cmd).expect("serialize");
+        let parsed: IpcCommand = serde_json::from_str(&json).expect("deserialize");
+        assert!(matches!(parsed, IpcCommand::Status));
+    }
+
+    #[test]
+    fn pause_command_roundtrips() {
+        let cmd = IpcCommand::Pause { minutes: 30 };
+        let json = serde_json::to_string(&cmd).expect("serialize");
+        let parsed: IpcCommand = serde_json::from_str(&json).expect("deserialize");
+        match parsed {
+            IpcCommand::Pause { minutes } => assert_eq!(minutes, 30),
+            other => panic!("expected Pause, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn protect_command_roundtrips() {
+        let cmd = IpcCommand::AddProtectedPath {
+            path: "/tmp/test".into(),
+        };
+        let json = serde_json::to_string(&cmd).expect("serialize");
+        let parsed: IpcCommand = serde_json::from_str(&json).expect("deserialize");
+        match parsed {
+            IpcCommand::AddProtectedPath { path } => assert_eq!(path, "/tmp/test"),
+            other => panic!("expected AddProtectedPath, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn snapshot_create_roundtrips() {
+        let cmd = IpcCommand::SnapshotCreate {
+            label: "test-label".into(),
+        };
+        let json = serde_json::to_string(&cmd).expect("serialize");
+        let parsed: IpcCommand = serde_json::from_str(&json).expect("deserialize");
+        match parsed {
+            IpcCommand::SnapshotCreate { label } => assert_eq!(label, "test-label"),
+            other => panic!("expected SnapshotCreate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn response_status_data_deserializes() {
+        let json = r#"{"status":"Ok","data":{"message":"ok"}}"#;
+        let resp: IpcResponse = serde_json::from_str(json).expect("deserialize");
+        assert!(matches!(resp, IpcResponse::Ok { .. }));
+    }
+
+    #[test]
+    fn response_error_deserializes() {
+        let json = r#"{"status":"Error","data":{"message":"something broke"}}"#;
+        let resp: IpcResponse = serde_json::from_str(json).expect("deserialize");
+        match resp {
+            IpcResponse::Error { message } => assert_eq!(message, "something broke"),
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn response_incidents_deserializes() {
+        let json = r#"{"status":"Incidents","data":{"lines":["line1","line2"]}}"#;
+        let resp: IpcResponse = serde_json::from_str(json).expect("deserialize");
+        match resp {
+            IpcResponse::Incidents { lines } => assert_eq!(lines.len(), 2),
+            other => panic!("expected Incidents, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn response_snapshot_list_deserializes() {
+        let json = r#"{"status":"SnapshotList","data":{"snapshots":[]}}"#;
+        let resp: IpcResponse = serde_json::from_str(json).expect("deserialize");
+        match resp {
+            IpcResponse::SnapshotList { snapshots } => assert_eq!(snapshots.len(), 0),
+            other => panic!("expected SnapshotList, got {other:?}"),
+        }
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn non_unix_send_returns_error() {
+        let client = IpcClient::new(PathBuf::from("any.sock"));
+        let result = client.send(IpcCommand::Ping);
+        assert!(result.is_err());
+    }
+}

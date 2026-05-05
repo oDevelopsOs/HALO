@@ -133,3 +133,78 @@ impl AppState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tab_all_returns_four_tabs() {
+        assert_eq!(Tab::all().len(), 4);
+    }
+
+    #[test]
+    fn tab_titles_are_unique() {
+        let titles: Vec<&str> = Tab::all().iter().map(|t| t.title()).collect();
+        let mut deduped: Vec<&str> = titles.clone();
+        deduped.sort();
+        deduped.dedup();
+        assert_eq!(
+            titles.len(),
+            deduped.len(),
+            "all tab titles must be unique"
+        );
+    }
+
+    #[test]
+    fn tab_default_is_dashboard() {
+        assert_eq!(Tab::default(), Tab::Dashboard);
+    }
+
+    #[test]
+    fn daemon_status_defaults_to_disconnected() {
+        let ds = DaemonStatus::default();
+        assert!(!ds.connected);
+        assert!(ds.version.is_empty());
+        assert!(ds.guard_backend.is_empty());
+        assert_eq!(ds.incidents_count, 0);
+    }
+
+    #[test]
+    fn app_state_new_is_default() {
+        let state = AppState::new();
+        assert_eq!(state.current_tab, Tab::Dashboard);
+        assert!(!state.daemon.connected);
+        assert!(state.incidents.is_empty());
+        assert!(state.snapshots.is_empty());
+    }
+
+    #[test]
+    fn set_error_clears_status() {
+        let mut state = AppState::new();
+        state.set_status("ok".into());
+        state.set_error("fail".into());
+        assert_eq!(state.error_message, Some("fail".into()));
+        assert_eq!(state.status_message, None);
+    }
+
+    #[test]
+    fn set_status_clears_error() {
+        let mut state = AppState::new();
+        state.set_error("fail".into());
+        state.set_status("ok".into());
+        assert_eq!(state.status_message, Some("ok".into()));
+        assert_eq!(state.error_message, None);
+    }
+
+    #[test]
+    fn clear_message_clears_both() {
+        let mut state = AppState::new();
+        state.set_error("fail".into());
+        state.set_status("ok".into());
+        state.clear_message();
+        assert_eq!(state.error_message, None);
+        assert_eq!(state.status_message, None);
+    }
+}
+
