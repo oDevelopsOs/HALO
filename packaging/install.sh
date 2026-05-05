@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
 # =============================================================================
-# AgentGuard — Bootstrap installer (Linux / macOS)
+# AgentGuard — Bootstrap installer (Linux)
 # =============================================================================
 #
 # Uso recomendado:
 #   curl -fsSL https://get.agentguard.io | bash
 #
 # Qué hace:
-#   1. Detecta SO (Linux / macOS) y arquitectura (x86_64 / aarch64)
+#   1. Detecta SO (Linux) y arquitectura (x86_64 / aarch64)
 #   2. Descarga los binarios correctos desde GitHub Releases
 #   3. Verifica checksum SHA-256
 #   4. Instala en /usr/local/bin
-#   5. En Linux: genera config, crea directorios, instala systemd unit
-#   6. En macOS: genera config, crea directorios, instala launchd plist
+#   5. Genera config, crea directorios, instala systemd unit
 #
 # Requisitos:
 #   - curl
@@ -51,7 +50,7 @@ detect_os() {
     case "$(uname -s)" in
         Linux)  echo "linux" ;;
         Darwin) echo "macos" ;;
-        *)      die "Unsupported OS: $(uname -s). AgentGuard currently runs on Linux and macOS." ;;
+        *)      die "Unsupported OS: $(uname -s). AgentGuard currently runs on Linux." ;;
     esac
 }
 
@@ -277,105 +276,6 @@ UNIEOF
     echo ""
 }
 
-# ── Instalación macOS ────────────────────────────────────────
-install_macos() {
-    local target="$1" tmp="$2"
-
-    info "Installing AgentGuard for macOS ($target)..."
-
-    # Descargar binaries
-    local cli_url="${BASE_URL}/${VERSION}/agentguard-cli-${target}"
-    local daemon_url="${BASE_URL}/${VERSION}/agentguard-macos-${target}"
-    local checksum_url="${BASE_URL}/${VERSION}/checksums.txt"
-
-    local cli_bin="${tmp}/agentguard"
-    local daemon_bin="${tmp}/agentguard-macos"
-    local checksums="${tmp}/checksums.txt"
-
-    download "$cli_url" "$cli_bin"
-    download "$daemon_url" "$daemon_bin"
-    download "$checksum_url" "$checksums" || true
-
-    if [[ -f "$checksums" ]]; then
-        sha256_check "$cli_bin" "$(grep "agentguard-cli-${target}" "$checksums" | cut -d' ' -f1)"
-        sha256_check "$daemon_bin" "$(grep "agentguard-macos-${target}" "$checksums" | cut -d' ' -f1)"
-    fi
-
-    install_binary "$cli_bin" "agentguard"
-    install_binary "$daemon_bin" "agentguard-macos"
-
-    # Generar config por defecto
-    local config_dir="$HOME/.agentguard"
-    local config_file="${config_dir}/config.toml"
-    if [[ ! -f "$config_file" ]]; then
-        info "Generating default config..."
-        mkdir -p "$config_dir"
-        "$INSTALL_PREFIX/agentguard" init --defaults 2>/dev/null || {
-            cat > "$config_file" <<'CONFEOF'
-[agentguard]
-version = "1"
-
-protected_dirs = []
-protected_files = []
-
-[on_violation]
-snapshot_on_violation = true
-
-[dlp]
-enabled = true
-proxy_port = 7771
-action = "block"
-
-[vault]
-snapshot_on_start = true
-keep_days = 30
-CONFEOF
-        }
-        success "Config written to $config_file"
-    fi
-
-    # Instalar launchd plist
-    local plist="$HOME/Library/LaunchAgents/com.agentguard.daemon.plist"
-    if [[ ! -f "$plist" ]]; then
-        info "Installing launchd agent..."
-        cat > "$tmp/com.agentguard.daemon.plist" <<PLISTEOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.agentguard.daemon</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/local/bin/agentguard-macos</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>/tmp/agentguard.log</string>
-    <key>StandardErrorPath</key>
-    <string>/tmp/agentguard.err</string>
-</dict>
-</plist>
-PLISTEOF
-        mkdir -p "$HOME/Library/LaunchAgents"
-        cp "$tmp/com.agentguard.daemon.plist" "$plist"
-        launchctl load "$plist" 2>/dev/null || true
-        success "launchd agent installed"
-    fi
-
-    success "AgentGuard installed for macOS!"
-    echo ""
-    info "Next steps:"
-    echo "  1. Edit config:   nano ~/.agentguard/config.toml"
-    echo "  2. Check status:   agentguard status"
-    echo "  3. Protect a dir:  agentguard protect ~/Documents"
-    echo ""
-}
-
 # ── Entry point ──────────────────────────────────────────────
 main() {
     printf "${BOLD}AgentGuard Installer${NC}\n"
@@ -404,7 +304,6 @@ main() {
 
     case "$os" in
         linux) install_linux "$target" "$tmp" ;;
-        macos) install_macos "$target" "$tmp" ;;
     esac
 }
 

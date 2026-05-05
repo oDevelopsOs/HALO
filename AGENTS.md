@@ -138,8 +138,8 @@ use agentguard_common::{IpcCommand, IpcResponse, PathPrefix};
 
 - `agentguard-linux` usa `#[cfg(feature = "ebpf")]` para aya
 - Sin `--features ebpf`, el daemon Linux compila con solo userspace fallback
-- `agentguard-windows` y `agentguard-macos` están en el workspace
-  hasta que se implementen (Fases 4-5)
+- `agentguard-windows` está en el workspace hasta que se implemente (Fase 4)
+- `agentguard-macos` (Fase 5) no está en el workspace actualmente
 
 ---
 

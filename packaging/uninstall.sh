@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# AgentGuard — Uninstaller (Linux / macOS)
+# AgentGuard — Uninstaller (Linux)
 # =============================================================================
 
 set -euo pipefail
@@ -47,29 +47,6 @@ if [[ "$OS" == "Linux" ]]; then
     read -rp "  Remove /var/lib/agentguard/ and /etc/agentguard/? [y/N] " DELDATA
     if [[ "$DELDATA" =~ ^[Yy] ]]; then
         sudo rm -rf /var/lib/agentguard /etc/agentguard /var/log/agentguard
-        success "data removed"
-    else
-        info "data preserved"
-    fi
-
-elif [[ "$OS" == "Darwin" ]]; then
-    info "Unloading launchd agent..."
-    launchctl unload "$HOME/Library/LaunchAgents/com.agentguard.daemon.plist" 2>/dev/null || true
-    rm -f "$HOME/Library/LaunchAgents/com.agentguard.daemon.plist"
-    success "launchd agent removed"
-
-    info "Removing binaries..."
-    sudo rm -f /usr/local/bin/agentguard /usr/local/bin/agentguard-macos
-    success "binaries removed"
-
-    info "Removing CA from trust store..."
-    sudo security delete-certificate -c "AgentGuard DLP Local Root CA" /Library/Keychains/System.keychain 2>/dev/null || true
-    success "CA removed"
-
-    info "Removing data..."
-    read -rp "  Remove ~/.agentguard/? [y/N] " DELDATA
-    if [[ "$DELDATA" =~ ^[Yy] ]]; then
-        rm -rf "$HOME/.agentguard"
         success "data removed"
     else
         info "data preserved"

@@ -426,7 +426,7 @@ async fn main() -> Result<()> {
 
 #[cfg(not(unix))]
 fn main() {
-    println!("agentguard-linux: this daemon only runs on Linux/macOS.");
+    println!("agentguard-linux: this daemon only runs on Linux.");
     println!("On this platform, use: agentguard-windows");
 }
 
