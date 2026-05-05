@@ -246,8 +246,21 @@ async fn main() -> Result<()> {
     let pattern_count = agent_patterns.len();
 
     let scan_tx = event_tx.clone();
+    let scan_dirs = config.protected_dirs.clone();
+    let scan_mode = config.sandbox.modo_por_defecto.clone();
+    let scan_sandbox = if scan_mode != "monitor" {
+        Some(agentguard_linux::sandbox::SandboxLauncher::new(config.clone()))
+    } else {
+        None
+    };
     tokio::task::spawn_blocking(move || {
-        agentguard_linux::guard::agents::scan_loop(agent_patterns, scan_tx);
+        agentguard_linux::guard::agents::scan_loop(
+            agent_patterns,
+            scan_tx,
+            scan_dirs,
+            scan_sandbox,
+            scan_mode,
+        );
     });
     info!(
         count = pattern_count,
