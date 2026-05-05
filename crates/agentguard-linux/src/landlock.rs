@@ -5,6 +5,16 @@
 //!
 //! Requiere: kernel >= 5.13, crate `landlock` 0.4.
 //! Solo disponible en Linux.
+//!
+//! ## Limitaciones conocidas
+//!
+//! * **Per-thread**: `restrict_self()` solo aplica al hilo actual. Otros hilos
+//!   del mismo proceso no están restringidos. Si el agente es multi-threaded,
+//!   los hilos secundarios conservan acceso completo al filesystem.
+//!
+//! * **Archivos ya abiertos**: cualquier file descriptor o memory mapping
+//!   abierto antes de `restrict_self()` sigue siendo accesible. Esto incluye
+//!   las shared libraries cargadas por el dynamic linker.
 
 #[cfg(target_os = "linux")]
 use landlock::{

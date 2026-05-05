@@ -589,8 +589,9 @@ mod win32 {
             if result.is_err() {
                 let code = GetLastError();
                 if code == ERROR_ACCESS_DENIED {
-                    warn!(path = ?path, "access denied reading DACL — skipping cleanup");
-                    return Ok(());
+                    return Err(GuardError::Internal(format!(
+                        "access denied reading DACL for {path:?} — cannot remove DENY ACEs"
+                    )));
                 }
                 return Err(GuardError::Internal(format!(
                     "GetNamedSecurityInfoW failed for cleanup {path:?}: 0x{:08x}",
@@ -816,7 +817,7 @@ mod win32 {
 
             let token_user = &*(buf.as_ptr() as *const TOKEN_USER);
             let sid_len = windows::Win32::Security::GetLengthSid(token_user.User.Sid) as usize;
-            let mut sid_bytes: Vec<u16> = vec![0u16; sid_len];
+            let mut sid_bytes: Vec<u16> = vec![0u16; sid_len / 2];
             std::ptr::copy_nonoverlapping(
                 token_user.User.Sid.0 as *const u8,
                 sid_bytes.as_mut_ptr() as *mut u8,
@@ -857,7 +858,7 @@ mod win32 {
             let sid = token_user.User.Sid;
 
             let sid_len = windows::Win32::Security::GetLengthSid(sid) as usize;
-            let mut sid_bytes: Vec<u16> = vec![0u16; sid_len];
+            let mut sid_bytes: Vec<u16> = vec![0u16; sid_len / 2];
             std::ptr::copy_nonoverlapping(
                 sid.0 as *const u8,
                 sid_bytes.as_mut_ptr() as *mut u8,

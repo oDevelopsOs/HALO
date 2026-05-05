@@ -9,6 +9,10 @@
 //! 4. Inyecta variables de entorno del proxy DLP.
 //!
 //! Requiere: Windows 8+ para AppContainer, Windows 10+ para LPAC.
+//!
+//! NOTA: A diferencia de Linux (bwrap --die-with-parent), Windows no tiene
+//! un mecanismo directo de "matar hijo si el padre muere". La mitigación es
+//! vía Job Objects con JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE en guard.rs.
 
 #[cfg(target_os = "windows")]
 mod windows_impl {
@@ -59,9 +63,16 @@ mod windows_impl {
             let display_name = format!("AgentGuard AI Agent — {}", agent_exe);
 
             // 2. Create or get AppContainer profile
-            let (appcontainer_sid, _already_existed) =
+            let (appcontainer_sid, already_existed) =
                 win32::create_or_get_app_container(&container_name, &display_name)
                     .map_err(|e| anyhow::anyhow!("AppContainer profile: {e}"))?;
+
+            if already_existed {
+                tracing::debug!(
+                    container = %container_name,
+                    "reusing existing AppContainer profile — capabilities may differ from expected"
+                );
+            }
 
             // 3. Build SecurityCapabilities for the new process
             let mut caps_array: Vec<win32::SidAndAttributes> = Vec::new();

@@ -39,6 +39,9 @@ impl SandboxLauncher {
         with_landlock: bool,
     ) -> Result<u32, anyhow::Error> {
         // Verificar que bwrap está instalado
+        // TOCTOU note: which::which resolves at check time; binary could be
+        // replaced between resolution and spawn(). Mitigation: canonicalize paths
+        // and the race window is microseconds with attacker needing write access.
         let bwrap_path = which::which("bwrap").map_err(|_| {
             anyhow::anyhow!("bwrap not found — install with: sudo apt install bubblewrap")
         })?;
