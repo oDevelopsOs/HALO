@@ -280,12 +280,27 @@ mod stub_impl {
 
     #[allow(dead_code)]
     impl SandboxCapabilities {
-        pub fn effective_mode(&self, _requested: &str) -> &'static str {
-            "monitor"
+        pub fn effective_mode(&self, requested: &str) -> &'static str {
+            match requested {
+                "hybrid" if self.appcontainer_available => "sandbox",
+                "sandbox" if self.appcontainer_available => "sandbox",
+                _ => "monitor",
+            }
         }
 
         pub fn report(&self) -> String {
-            "no sandbox capabilities on this platform".to_string()
+            let mut parts: Vec<&str> = Vec::new();
+            if self.appcontainer_available {
+                parts.push("AppContainer=yes");
+            }
+            if self.etw_available {
+                parts.push("ETW=yes");
+            }
+            if parts.is_empty() {
+                "no sandbox capabilities on this platform".to_string()
+            } else {
+                parts.join(" ")
+            }
         }
     }
 }
@@ -297,3 +312,49 @@ pub use windows_impl::*;
 #[cfg(not(target_os = "windows"))]
 #[allow(unused_imports)]
 pub use stub_impl::*;
+
+#[cfg(test)]
+mod tests {
+    use super::SandboxCapabilities;
+
+    #[test]
+    fn effective_mode_when_appcontainer_available() {
+        let caps = SandboxCapabilities {
+            appcontainer_available: true,
+            etw_available: true,
+        };
+        assert_eq!(caps.effective_mode("sandbox"), "sandbox");
+        assert_eq!(caps.effective_mode("hybrid"), "sandbox");
+        assert_eq!(caps.effective_mode("monitor"), "monitor");
+    }
+
+    #[test]
+    fn effective_mode_falls_back_to_monitor() {
+        let caps = SandboxCapabilities {
+            appcontainer_available: false,
+            etw_available: true,
+        };
+        assert_eq!(caps.effective_mode("sandbox"), "monitor");
+        assert_eq!(caps.effective_mode("hybrid"), "monitor");
+    }
+
+    #[test]
+    fn report_contains_capabilities() {
+        let caps = SandboxCapabilities {
+            appcontainer_available: true,
+            etw_available: true,
+        };
+        let r = caps.report();
+        assert!(r.contains("AppContainer=yes"), "{r}");
+        assert!(r.contains("ETW=yes"), "{r}");
+    }
+
+    #[test]
+    fn report_without_capabilities_is_nonempty() {
+        let caps = SandboxCapabilities {
+            appcontainer_available: false,
+            etw_available: false,
+        };
+        assert!(!caps.report().is_empty());
+    }
+}

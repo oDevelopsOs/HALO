@@ -363,3 +363,32 @@ pub(crate) mod win32 {
         ret >= 0
     }
 }
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    /// Best-effort PEB test: reads CWD of current process.
+    #[test]
+    fn peb_reads_cwd_of_self() {
+        let cwd = super::win32::read_process_cwd_by_pid(std::process::id());
+        assert!(!cwd.is_empty(), "CWD should not be empty");
+        assert!(
+            std::path::Path::new(&cwd).is_absolute(),
+            "CWD should be absolute: {cwd}"
+        );
+    }
+
+    /// Best-effort: try to read cmdline of a spawned cmd.exe
+    #[test]
+    fn peb_reads_cmdline_of_child() {
+        let child = std::process::Command::new("cmd.exe")
+            .args(["/C", "echo", "HELLO_AGENTGUARD_TEST_12345"])
+            .spawn()
+            .expect("spawn cmd");
+        let pid = child.id();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let cmd = super::win32::read_process_command_line_by_pid(pid);
+        if let Some(c) = cmd {
+            assert!(c.to_lowercase().contains("cmd"), "expected cmd in: {c}");
+        }
+    }
+}
