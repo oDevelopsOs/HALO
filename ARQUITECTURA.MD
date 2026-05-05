@@ -324,7 +324,7 @@ action = "block"
 
 ## 11. Roadmap
 
-El documento `ROADMAP-V2.MD` describe features planeadas para v2.0:
+El documento `docs/ROADMAP-V2.MD` describe features planeadas para v2.0:
 
 - Binary displacement + inotify auto-heal (protección sin root)
 - seccomp-BPF con USER_NOTIF (syscall filtering adaptativo)

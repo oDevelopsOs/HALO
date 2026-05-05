@@ -56,7 +56,7 @@ fix/NOMBRE          ← ramas de bugfix
 
 ```markdown
 [ ] Leer AGENTS.md (este archivo)
-[ ] Leer PlanDeImplementacion.md para saber en qué fase estamos
+[ ] Leer docs/PlanDeImplementacion.md para saber en qué fase estamos
 [ ] Verificar `git status` — no debe haber cambios sin commitear
 [ ] Verificar `cargo build --workspace --exclude agentguard-ebpf` — debe compilar
 [ ] Verificar `cargo test --workspace --exclude agentguard-ebpf` — deben pasar
@@ -83,8 +83,8 @@ fix/NOMBRE          ← ramas de bugfix
 [ ] cargo test --workspace --exclude agentguard-ebpf (todos pasan)
 [ ] cargo clippy --workspace --exclude agentguard-ebpf -- -D warnings (0 warnings)
 [ ] git status (solo cambios intencionados)
-[ ] Actualizar CHANGELOG.md si es un cambio visible
-[ ] Actualizar PlanDeImplementacion.md si cambia el roadmap
+[ ] Actualizar docs/CHANGELOG.md si es un cambio visible
+[ ] Actualizar docs/PlanDeImplementacion.md si cambia el roadmap
 ```
 
 ---
