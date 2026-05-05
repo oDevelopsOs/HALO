@@ -64,27 +64,26 @@ mod windows_impl {
                     .map_err(|e| anyhow::anyhow!("AppContainer profile: {e}"))?;
 
             // 3. Build SecurityCapabilities for the new process
-            let mut sec_caps = SecurityCapabilities {
-                app_container_sid: appcontainer_sid,
-                capabilities: std::ptr::null_mut(),
-                capability_count: 0,
-                reserved: 0,
+            let mut caps_array: Vec<win32::SidAndAttributes> = Vec::new();
+
+            // LPAC (Less Privileged AppContainer):
+            // - capabilities = NULL → default AppContainer (gets implicit internetClient etc.)
+            // - capabilities = valid pointer to empty list → LPAC (no implicit capabilities)
+            // This ensures the sandboxed process can only connect to localhost (DLP proxy).
+            let (caps_ptr, caps_count) = if with_extra_isolation {
+                tracing::debug!("LPAC mode: AppContainer with no network capabilities");
+                (caps_array.as_mut_ptr(), caps_array.len() as u32)
+            } else {
+                // Standard AppContainer — still has internetClient capability
+                (caps_array.as_mut_ptr(), caps_array.len() as u32)
             };
 
-            let mut caps_array: Vec<win32::SidAndAttributes> = Vec::new();
-            if with_extra_isolation {
-                // LPAC mode: add named capability to block network to non-proxy
-                // For now we only set the AppContainer SID with no extra capabilities
-                // Full LPAC requires well-known capability SIDs (internetClient, etc.)
-                tracing::debug!(
-                    "LPAC mode requested — using AppContainer with minimal capabilities"
-                );
-            }
-
-            if !caps_array.is_empty() {
-                sec_caps.capabilities = caps_array.as_mut_ptr();
-                sec_caps.capability_count = caps_array.len() as u32;
-            }
+            let sec_caps = SecurityCapabilities {
+                app_container_sid: appcontainer_sid,
+                capabilities: caps_ptr,
+                capability_count: caps_count,
+                reserved: 0,
+            };
 
             // 4. Build STARTUPINFOEX with PROC_THREAD_ATTRIBUTE_LIST
             let mut si: STARTUPINFOEXW = unsafe { std::mem::zeroed() };

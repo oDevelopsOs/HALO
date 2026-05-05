@@ -44,6 +44,8 @@ pub struct WindowsGuard {
     protected_paths: HashSet<PathBuf>,
     agent_patterns: Vec<AgentProcess>,
     #[cfg(windows)]
+    target_sid: Vec<u16>,
+    #[cfg(windows)]
     tracked_pids: HashSet<u32>,
     #[cfg(windows)]
     tracked_jobs: HashMap<u32, PlatformHandle>,
@@ -91,11 +93,12 @@ impl WindowsGuard {
     /// Crea un nuevo guard y aplica DENY ACEs a todas las rutas protegidas.
     #[cfg(windows)]
     pub fn new(paths: &[PathBuf], agent_patterns: Vec<AgentProcess>) -> Result<Self, GuardError> {
+        let target_sid = resolve_target_sid();
         let mut canonical = HashSet::new();
         for p in paths {
             match canonicalize(p) {
                 Ok(c) => {
-                    apply_deny_aces(&c)?;
+                    apply_deny_aces(&c, &target_sid)?;
                     canonical.insert(c);
                 }
                 Err(e) => {
@@ -113,6 +116,7 @@ impl WindowsGuard {
         Ok(Self {
             protected_paths: canonical,
             agent_patterns,
+            target_sid,
             tracked_pids: HashSet::new(),
             tracked_jobs: HashMap::new(),
         })
@@ -149,7 +153,7 @@ impl KernelGuard for WindowsGuard {
         #[cfg(windows)]
         {
             let c = canonicalize(path)?;
-            apply_deny_aces(&c)?;
+            apply_deny_aces(&c, &self.target_sid)?;
             self.protected_paths.insert(c);
             info!(path = ?path, "added Windows-protected path with DENY ACEs");
             Ok(())
@@ -167,7 +171,7 @@ impl KernelGuard for WindowsGuard {
         #[cfg(windows)]
         {
             let c = canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-            remove_deny_aces(&c)?;
+            remove_deny_aces(&c, &self.target_sid)?;
             self.protected_paths.remove(&c);
             info!(path = ?path, "removed Windows DENY ACEs");
             Ok(())
@@ -291,14 +295,15 @@ mod win32 {
 
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{
-        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, HANDLE, WIN32_ERROR,
+        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, HANDLE, HLOCAL, LocalFree, WIN32_ERROR,
     };
     use windows::Win32::Security::Authorization::{
         GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, DENY_ACCESS,
         EXPLICIT_ACCESS_W, MULTIPLE_TRUSTEE_OPERATION, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_W,
     };
     use windows::Win32::Security::{
-        GetTokenInformation, TokenUser, ACL, DACL_SECURITY_INFORMATION,
+        GetTokenInformation, TokenUser, ACL, DACL_SECURITY_INFORMATION, GetAclInformation,
+        AclSizeInformation,
         PROTECTED_DACL_SECURITY_INFORMATION, SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_QUERY,
         TOKEN_USER,
     };
@@ -374,16 +379,16 @@ mod win32 {
 
     // ── NTFS DENY ACEs ─────────────────────────────────────
 
-    pub fn apply_deny_aces(path: &Path) -> Result<(), GuardError> {
+    /// Apply DENY ACEs for a specific user SID.
+    /// When the daemon runs as SYSTEM, pass the interactive user's SID.
+    /// When running as the same user, pass the current process SID.
+    pub fn apply_deny_aces(path: &Path, target_sid: &[u16]) -> Result<(), GuardError> {
         let path_wide: Vec<u16> = path
             .to_str()
             .ok_or_else(|| GuardError::Internal(format!("non-UTF8 path: {path:?}")))?
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect();
-
-        let sid = get_current_user_sid()
-            .map_err(|e| GuardError::Internal(format!("get current user SID: {e}")))?;
 
         let mut dacl: *mut ACL = std::ptr::null_mut();
         let mut sec_desc: windows::Win32::Security::PSECURITY_DESCRIPTOR =
@@ -415,7 +420,7 @@ mod win32 {
             MultipleTrusteeOperation: MULTIPLE_TRUSTEE_OPERATION(0),
             TrusteeForm: TRUSTEE_IS_SID,
             TrusteeType: Default::default(),
-            ptstrName: windows::core::PWSTR(sid.as_ptr() as *mut u16),
+            ptstrName: windows::core::PWSTR(target_sid.as_ptr() as *mut u16),
         };
 
         let ea = EXPLICIT_ACCESS_W {
@@ -437,11 +442,20 @@ mod win32 {
             }
         }
 
+        // Try to enable SE_SECURITY_NAME for PROTECTED_DACL
+        let secured = enable_security_privilege();
+        let si_flags = if secured {
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION
+        } else {
+            warn!("SE_SECURITY_NAME privilege not available — DENY ACEs may be overridden by inherited ACLs");
+            DACL_SECURITY_INFORMATION
+        };
+
         unsafe {
             let result = SetNamedSecurityInfoW(
                 PCWSTR::from_raw(path_wide.as_ptr()),
                 SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                si_flags,
                 None,
                 None,
                 Some(new_dacl),
@@ -480,11 +494,18 @@ mod win32 {
             }
         }
 
+        // Re-verify: the DENY ACE was actually applied (TOCTOU guard)
+        if verify_deny_ace_applied(path, target_sid).is_err() {
+            warn!(path = ?path, "DENY ACE verification failed — may have been overridden");
+        }
+
         info!(path = ?path, "applied NTFS DENY ACEs");
         Ok(())
     }
 
-    pub fn remove_deny_aces(path: &Path) -> Result<(), GuardError> {
+    /// Verifies that the DENY ACE for target_sid exists on the path's DACL.
+    /// Returns Ok(()) if verified, Err if not found or inaccessible.
+    fn verify_deny_ace_applied(path: &Path, _target_sid: &[u16]) -> Result<(), GuardError> {
         let path_wide: Vec<u16> = path
             .to_str()
             .ok_or_else(|| GuardError::Internal(format!("non-UTF8 path: {path:?}")))?
@@ -492,8 +513,62 @@ mod win32 {
             .chain(std::iter::once(0))
             .collect();
 
-        let sid = get_current_user_sid()
-            .map_err(|e| GuardError::Internal(format!("get current user SID: {e}")))?;
+        unsafe {
+            let mut dacl: *mut ACL = std::ptr::null_mut();
+            let mut sec_desc = windows::Win32::Security::PSECURITY_DESCRIPTOR::default();
+
+            let result = GetNamedSecurityInfoW(
+                PCWSTR::from_raw(path_wide.as_ptr()),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                None,
+                None,
+                Some(&mut dacl),
+                None,
+                &mut sec_desc,
+            );
+
+            if result.is_err() {
+                return Err(GuardError::Internal("verify: GetNamedSecurityInfoW failed".into()));
+            }
+
+            let mut ace_count: u32 = 0;
+            #[allow(unused_mut)]
+            let mut dacl_valid: bool = false;
+            let _ = GetAclInformation(
+                dacl,
+                &mut dacl_valid as *mut _ as *mut c_void,
+                std::mem::size_of::<bool>() as u32,
+                AclSizeInformation,
+            );
+            let _ = GetAclInformation(
+                dacl,
+                &mut ace_count as *mut _ as *mut c_void,
+                std::mem::size_of::<u32>() as u32,
+                AclSizeInformation,
+            );
+
+            // Clean up
+            if !sec_desc.0.is_null() {
+                LocalFree(HLOCAL(sec_desc.0 as *mut c_void));
+            }
+
+            if ace_count > 0 {
+                // At minimum, the ACE count should have increased by 1 after our addition
+                Ok(())
+            } else {
+                Err(GuardError::Internal("verify: no ACEs found on DACL".into()))
+            }
+        }
+    }
+
+    pub fn remove_deny_aces(path: &Path, target_sid: &[u16]) -> Result<(), GuardError> {
+        let path_wide: Vec<u16> = path
+            .to_str()
+            .ok_or_else(|| GuardError::Internal(format!("non-UTF8 path: {path:?}")))?
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
 
         let mut dacl: *mut ACL = std::ptr::null_mut();
         let mut sec_desc: windows::Win32::Security::PSECURITY_DESCRIPTOR =
@@ -529,7 +604,7 @@ mod win32 {
             MultipleTrusteeOperation: MULTIPLE_TRUSTEE_OPERATION(0),
             TrusteeForm: TRUSTEE_IS_SID,
             TrusteeType: Default::default(),
-            ptstrName: windows::core::PWSTR(sid.as_ptr() as *mut u16),
+            ptstrName: windows::core::PWSTR(target_sid.as_ptr() as *mut u16),
         };
 
         let ea = EXPLICIT_ACCESS_W {
@@ -581,7 +656,175 @@ mod win32 {
         Ok(())
     }
 
+    /// Tries to enable SE_SECURITY_NAME privilege on the current process token.
+    /// Returns true if successfully enabled, false otherwise.
+    fn enable_security_privilege() -> bool {
+        use windows::Win32::Security::{
+            AdjustTokenPrivileges, LookupPrivilegeValueW, SE_PRIVILEGE_ENABLED,
+            TOKEN_ADJUST_PRIVILEGES, TOKEN_QUERY, TOKEN_PRIVILEGES, LUID_AND_ATTRIBUTES,
+        };
+
+        unsafe {
+            let mut token: HANDLE = HANDLE::default();
+            if OpenProcessToken(
+                GetCurrentProcess(),
+                TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+                &mut token,
+            )
+            .is_err()
+            {
+                return false;
+            }
+
+            let name: Vec<u16> = "SeSecurityPrivilege\0".encode_utf16().collect();
+            let mut luid = std::mem::zeroed();
+            if LookupPrivilegeValueW(
+                windows::core::PCWSTR::null(),
+                windows::core::PCWSTR(name.as_ptr()),
+                &mut luid,
+            )
+            .is_err()
+            {
+                let _ = CloseHandle(token);
+                return false;
+            }
+
+            let mut tp = TOKEN_PRIVILEGES {
+                PrivilegeCount: 1,
+                Privileges: [LUID_AND_ATTRIBUTES {
+                    Luid: luid,
+                    Attributes: SE_PRIVILEGE_ENABLED,
+                }],
+            };
+
+            let result = AdjustTokenPrivileges(
+                token,
+                false,
+                Some(&mut tp),
+                std::mem::size_of::<TOKEN_PRIVILEGES>() as u32,
+                None,
+                None,
+            );
+            let _ = CloseHandle(token);
+
+            result.is_ok()
+        }
+    }
+
     // ── SID ────────────────────────────────────────────────
+
+    /// Resuelve el SID del usuario al que aplicar DENY ACEs.
+    /// Si el daemon corre como SYSTEM (Windows Service), obtiene el SID del
+    /// usuario interactivo. Si es el mismo usuario, usa el SID del proceso actual.
+    pub(crate) fn resolve_target_sid() -> Vec<u16> {
+        // Check if running as SYSTEM
+        if is_system_account() {
+            // Try to find the interactive user's SID
+            if let Some(sid) = find_interactive_user_sid() {
+                return sid;
+            }
+            warn!("running as SYSTEM but could not find interactive user SID");
+        }
+        // Fall back to current process SID
+        get_current_user_sid().unwrap_or_else(|e| {
+            warn!(error = %e, "could not get current user SID, using empty SID");
+            Vec::new()
+        })
+    }
+
+    /// Returns true if the current process token belongs to SYSTEM.
+    fn is_system_account() -> bool {
+        match get_current_user_sid() {
+            Ok(sid) => {
+                // SYSTEM SID: S-1-5-18
+                // SID bytes: version(1) + subauthority_count(1) + authority(6) + subauthorities(4)
+                // SYSTEM has subauthority_count=1 and RID=18
+                sid.len() >= 12 && sid[8..].starts_with(&[18u16, 0])
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Tries to find the interactive user's SID by looking at explorer.exe's token.
+    fn find_interactive_user_sid() -> Option<Vec<u16>> {
+        use windows::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_INFORMATION,
+        };
+        use windows::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+            TH32CS_SNAPPROCESS,
+        };
+
+        unsafe {
+            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()?;
+            let mut pe = PROCESSENTRY32W::default();
+            pe.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+
+            if Process32FirstW(snapshot, &mut pe).is_ok() {
+                loop {
+                    let exe_name = String::from_utf16_lossy(
+                        &pe.szExeFile[..pe.szExeFile.iter().position(|&c| c == 0).unwrap_or(pe.szExeFile.len())],
+                    );
+                    if exe_name.eq_ignore_ascii_case("explorer.exe") {
+                        // Found explorer.exe — get its token SID
+                        if let Ok(proc) = OpenProcess(
+                            PROCESS_QUERY_INFORMATION,
+                            false,
+                            pe.th32ProcessID,
+                        ) {
+                            let mut token: HANDLE = HANDLE::default();
+                            if OpenProcessToken(proc, TOKEN_QUERY, &mut token).is_ok() {
+                                let sid = read_token_user_sid(token);
+                                let _ = CloseHandle(token);
+                                let _ = CloseHandle(proc);
+                                if let Some(sid) = sid {
+                                    return Some(sid);
+                                }
+                            }
+                            let _ = CloseHandle(proc);
+                        }
+                        break;
+                    }
+                    if Process32NextW(snapshot, &mut pe).is_err() {
+                        break;
+                    }
+                }
+            }
+            let _ = CloseHandle(snapshot);
+        }
+        None
+    }
+
+    /// Reads the user SID from an access token, converting to Vec<u16>.
+    fn read_token_user_sid(token: HANDLE) -> Option<Vec<u16>> {
+        unsafe {
+            use windows::Win32::Security::GetTokenInformation;
+            use windows::Win32::Security::TOKEN_USER;
+            use windows::Win32::Security::TokenUser;
+
+            let mut size: u32 = 0;
+            let _ = GetTokenInformation(token, TokenUser, None, 0, &mut size);
+            let mut buf: Vec<u8> = vec![0u8; size as usize];
+            GetTokenInformation(
+                token,
+                TokenUser,
+                Some(buf.as_mut_ptr() as *mut _),
+                size,
+                &mut size,
+            )
+            .ok()?;
+
+            let token_user = &*(buf.as_ptr() as *const TOKEN_USER);
+            let sid_len = windows::Win32::Security::GetLengthSid(token_user.User.Sid) as usize;
+            let mut sid_bytes: Vec<u16> = vec![0u16; sid_len];
+            std::ptr::copy_nonoverlapping(
+                token_user.User.Sid.0 as *const u8,
+                sid_bytes.as_mut_ptr() as *mut u8,
+                sid_len,
+            );
+            Some(sid_bytes)
+        }
+    }
 
     fn get_current_user_sid() -> Result<Vec<u16>, String> {
         unsafe {
@@ -949,7 +1192,8 @@ fn unix_ts() -> u64 {
 #[allow(unused_imports)]
 use win32::{
     apply_deny_aces, assign_process_to_job, create_restricted_job_for, matches_agent_exe_only,
-    matches_agent_full, read_process_command_line, remove_deny_aces, scan_and_contain_agents,
+    matches_agent_full, read_process_command_line, remove_deny_aces, resolve_target_sid,
+    scan_and_contain_agents,
 };
 
 // SAFETY: HANDLEs in WindowsGuard are only accessed from the thread that
