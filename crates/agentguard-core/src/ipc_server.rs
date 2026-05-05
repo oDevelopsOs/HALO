@@ -490,11 +490,10 @@ mod named_pipe {
     use super::*;
     use std::io::{Read, Write};
     use windows::Win32::Foundation::{CloseHandle, ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE};
-    use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
+    use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile, PIPE_ACCESS_DUPLEX};
     use windows::Win32::System::Pipes::{
         ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe,
-        PIPE_ACCESS_DUPLEX, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE,
-        PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+        PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
     };
 
     /// Wrapper que implementa Read + Write para handles de Named Pipe.
@@ -530,7 +529,7 @@ mod named_pipe {
             unsafe {
                 WriteFile(
                     self.handle,
-                    buf,
+                    Some(buf),
                     Some(&mut bytes_written),
                     None,
                 )
@@ -593,8 +592,10 @@ mod named_pipe {
                 };
 
                 let connected = unsafe {
-                    let result = ConnectNamedPipe(pipe_handle, None);
-                    result.is_ok() || result.unwrap_err() == ERROR_PIPE_CONNECTED
+                    match ConnectNamedPipe(pipe_handle, None) {
+                        Ok(()) => true,
+                        Err(e) => e == ERROR_PIPE_CONNECTED.into(),
+                    }
                 };
 
                 if !connected {
