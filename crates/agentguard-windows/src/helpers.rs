@@ -402,7 +402,7 @@ mod tests {
         let child = std::process::Command::new("cmd.exe")
             .args(["/C", "echo", "HELLO_AGENTGUARD_TEST_12345"])
             .spawn()
-            .expect("spawn cmd");
+            .expect("spawn cmd"); // unwrap-ok: test code — acceptable in #[test]
         let pid = child.id();
         std::thread::sleep(std::time::Duration::from_millis(100));
         let cmd = super::win32::read_process_command_line_by_pid(pid);
