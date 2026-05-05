@@ -153,7 +153,7 @@ impl IpcServer {
 
         #[cfg(windows)]
         {
-            self.start_named_pipe_windowed(socket_path)
+            self.start_named_pipe_windowed(socket_path.to_string_lossy().to_string())
         }
 
         #[cfg(not(any(unix, windows)))]
@@ -489,7 +489,7 @@ impl IpcServer {
 mod named_pipe {
     use super::*;
     use std::io::{Read, Write};
-    use windows::Win32::Foundation::{CloseHandle, ERROR_PIPE_CONNECTED, HANDLE};
+    use windows::Win32::Foundation::{CloseHandle, ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE};
     use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
     use windows::Win32::System::Pipes::{
         ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe,
@@ -575,7 +575,7 @@ mod named_pipe {
                     .collect();
 
                 let pipe_handle: HANDLE = unsafe {
-                    match CreateNamedPipeW(
+                    let h = CreateNamedPipeW(
                         windows::core::PCWSTR(name_wide.as_ptr()),
                         PIPE_ACCESS_DUPLEX,
                         PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
@@ -584,13 +584,12 @@ mod named_pipe {
                         4096,
                         0,
                         None,
-                    ) {
-                        Ok(h) => h,
-                        Err(e) => {
-                            tracing::error!("CreateNamedPipeW failed: {e:?}");
-                            break;
-                        }
+                    );
+                    if h == INVALID_HANDLE_VALUE {
+                        tracing::error!("CreateNamedPipeW failed");
+                        break;
                     }
+                    h
                 };
 
                 let connected = unsafe {
@@ -623,11 +622,8 @@ mod named_pipe {
 }
 
 #[cfg(windows)]
-fn start_named_pipe_server(server: IpcServer, pipe_name: PathBuf) -> Result<IpcShutdown, std::io::Error> {
-    named_pipe::run_pipe_server(
-        server,
-        pipe_name.to_string_lossy().to_string(),
-    )
+fn start_named_pipe_server(server: IpcServer, pipe_name: String) -> Result<IpcShutdown, std::io::Error> {
+    named_pipe::run_pipe_server(server, pipe_name)
 }
 
 /// Builder para IpcServer con opciones adicionales.
