@@ -99,10 +99,11 @@ crates/
 ├── agentguard-core/         Lógica compartida del daemon (todas las plataformas)
 │   └── NO contiene implementaciones de guard específicas de SO
 ├── agentguard-linux/        Binario Linux (eBPF + userspace fallback)
-├── agentguard-windows/      Binario Windows (Fase 4)
+├── agentguard-windows/      Binario Windows (Fase 4+8)
 ├── agentguard-ebpf/         Programas eBPF kernel (compilación separada, nightly)
 ├── agentguard-tui/         TUI terminal (ratatui + crossterm)
 ├── agentguard-cli/          CLI cross-platform (único binario para todos)
+├── agentguard-installer/    Bootstrap installer
 ```
 
 ### 3.2 Dónde va cada cosa
@@ -178,10 +179,10 @@ cargo test --workspace --exclude agentguard-ebpf
 | `agentguard-common` | 3 | OK |
 | `agentguard-core` | 62 (60 unit + 2 E2E ignorados) | OK |
 | `agentguard-linux` | 18 (15 unit + 3 integración) | OK |
-| `agentguard-tui` | 0 | OK |
-| `agentguard-cli` | 11 | OK |
-| `agentguard-windows` | 7 unit + 15 E2E (solo Windows) | OK |
-| **Total** | **99 passed + 2 ignored + 15 Windows-only** | **0 fallos** |
+| `agentguard-tui` | 26 (8 theme + 8 app + 10 IPC) | OK |
+| `agentguard-cli` | 12 | OK |
+| `agentguard-windows` | 13 (7 matching + 4 sandbox + 2 PEB) | OK |
+| **Total** | **132 passed + 2 ignored** | **0 fallos** |
 
 ---
 
@@ -193,7 +194,10 @@ cargo test --workspace --exclude agentguard-ebpf
 cargo fmt --check
 cargo clippy --workspace --exclude agentguard-ebpf -- -D warnings
 cargo test --workspace --exclude agentguard-ebpf
-grep -rn "\.unwrap()\|\.expect(" crates/*/src  # debe ser 0 en prod
+grep -rn "\.unwrap\(\)\|\.expect(" crates/*/src  # debe ser 0 en prod
+# Windows cross-compile (requiere mingw-w64)
+CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc \
+  cargo build --workspace --exclude agentguard-ebpf --target x86_64-pc-windows-gnu
 ```
 
 ### 6.2 Build eBPF (solo cuando se modifica agentguard-ebpf)
@@ -233,9 +237,11 @@ cargo build -p agentguard-linux --features ebpf
 | **5** | — Eliminada | macOS daemon — fuera de scope MVP |
 | **6** | ✓ Completada | TUI Terminal (ratatui + crossterm, 4 tabs) |
 | **7** | ✓ Completada | Auto-updater (ureq 3, GitHub Releases, SHA256) |
-| **8** | ✓ Completada | Windows hardening (AppContainer, PEB, Named Pipes, tests E2E) |
+| **8** | ✓ Completada | Windows hardening (AppContainer, PEB, Named Pipes, auditoría 21 issues) |
 
 ---
 
-> **Última actualización:** 2026-05-05 — Fase 8: hardening Windows completo. AppContainer, PEB, Named Pipes, 15 tests E2E. 99 tests, 0 warnings.
+> **Última actualización:** 2026-05-05 — Fase 8 + auditoría completa. 132 tests, 0 warnings.
+> **Arquitectura:** [`ARQUITECTURA.MD`](ARQUITECTURA.MD) — estado real del proyecto.
+> **Roadmap v2:** [`docs/ROADMAP-V2.MD`](docs/ROADMAP-V2.MD) — features planeadas.
 > **Backup más reciente:** `backup/pre-fase0`

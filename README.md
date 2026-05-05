@@ -2,6 +2,10 @@
 
 > **Documento de referencia para implementación automatizada**
 > Versión 1.0 — Prioridad: Linux > Windows
+>
+> ⚠️ **Para el estado REAL del código implementado, ver [`ARQUITECTURA.MD`](./ARQUITECTURA.MD).**
+> Este README es la especificación original de diseño. Algunas secciones describen
+> features planeadas que aún no están implementadas (ver [`docs/ROADMAP-V2.MD`](./docs/ROADMAP-V2.MD)).
 
 ---
 
