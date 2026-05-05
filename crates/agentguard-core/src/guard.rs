@@ -3,7 +3,7 @@
 //! Dos implementaciones (en crates separados por SO):
 //! - `agentguard-linux`: eBPF LSM (kernel-level) + userspace notify (fallback)
 //! - `agentguard-windows`: NTFS DENY ACEs + Job Objects (Fase 4)
-//! - `agentguard-macos`: EndpointSecurity + chflags fallback (Fase 5)
+//! - `agentguard-windows`: NTFS DENY ACEs + Job Objects + AppContainer/LPAC (Fase 4+8)
 //!
 //! Cada crate de plataforma implementa el trait `KernelGuard`.
 

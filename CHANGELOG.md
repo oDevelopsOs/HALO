@@ -128,10 +128,10 @@ Verificado E2E: `curl -x http://127.0.0.1:7771 -d 'sk-...' http://dest/` → `HT
 - `agentguard-linux/src/main.rs`: IPC server con builder + incidents log + paused flag. Event loop respeta pausa (loguea incidentes pero no reacciona).
 - `agentguard-windows/src/main.rs`: Igual que Linux. Corrección de `.expect()` por manejo explícito de error en `Runtime::new()`.
 - `agentguard-windows/src/guard.rs`: Compilación cross-platform (stubs en Linux con `#[cfg(windows)]`). Lectura de PEB para command line de otro proceso. Matching por `argv_contains_any`. Job Objects uno por proceso. 7 tests.
-- `packaging/install.sh`: Bootstrap Linux/macOS — detecta SO/arch, descarga binarios de GitHub Releases, verifica SHA-256, instala systemd/launchd, genera config, añade CA al trust store.
+- `packaging/install.sh`: Bootstrap Linux — detecta SO/arch, descarga binarios de GitHub Releases, verifica SHA-256, instala systemd, genera config, añade CA al trust store.
 - `packaging/install.ps1`: Bootstrap Windows — detecta arch, descarga binarios, verifica SHA-256, registra Windows Service, genera config.
 - `packaging/uninstall.sh` + `packaging/uninstall.ps1`: Scripts de desinstalación completa (binarios, servicio, CA, datos).
-- `packaging/macos/com.agentguard.daemon.plist`: LaunchDaemon plist para macOS.
+- ~~`packaging/macos/com.agentguard.daemon.plist`~~ (eliminado — macOS fuera de scope MVP).
 - `packaging/windows/`: Directorio preparado para Inno Setup installer (Fase 4.6).
 
 ### Fixed

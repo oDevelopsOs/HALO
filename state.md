@@ -14,7 +14,7 @@
 | Clippy warnings | 0 |
 | `.unwrap()`/`.expect()` en prod | 0 |
 | Fases completadas | 0, 1, 2, 3, 4, 6, 7, 8 |
-| Fases pendientes | 5 (macOS) |
+| Fase eliminada | 5 (macOS — fuera de scope MVP) |
 | Auditoría seguridad | 21/21 issues corregidos (3C + 4H + 7M + 7L)
 
 ### Estructura de crates
@@ -370,7 +370,7 @@ Tipos FFI `no_std` + IPC types `std`:
 | 6 | **Sin protección contra lectura en Windows**: DENY ACEs solo cubre escritura/borrado | BAJO | Pendiente (NTFS: solo escritura) |
 | 7 | **TUI tiene 0 tests** | MEDIO | ✓ Resuelto (26 tests: 8 theme + 8 app + 10 IPC) |
 | 8 | **Sin installer MSI/WiX para Windows** | MEDIO | ✓ Resuelto (installer.iss + install_windows funcional) |
-| 9 | **Documentación de Fase 5 (macOS) inexistente**: no hay crate `agentguard-macos` | BAJO | Pendiente |
+| 9 | **Documentación de Fase 5 (macOS) inexistente**: no hay crate `agentguard-macos` | BAJO | — Eliminado (fuera de scope MVP) |
 
 ---
 
@@ -383,7 +383,7 @@ Tipos FFI `no_std` + IPC types `std`:
 | **2** | Linux daemon (eBPF + userspace) | ✓ | 95% (network eBPF activo, falta DLP kernel-level) |
 | **3** | CLI + installer | ✓ | 100% (installer Windows descarga binarios, Named Pipe IPC) |
 | **4** | Windows daemon | ✓ | 95% (Fase 8 + auditoría: sandbox, PEB, IPC, tests, hardening) |
-| **5** | macOS daemon | □ | 0% (pospuesto) |
+| **5** | ~~macOS~~ | — | Eliminado del MVP |
 | **6** | TUI | ✓ | 100% (26 tests) |
 | **7** | Auto-updater | ✓ | 100% |
 | **8** | Windows hardening + seguridad | ✓ | 100% (21 issues corregidos) |
@@ -421,7 +421,6 @@ Tipos FFI `no_std` + IPC types `std`:
 
 ### Pendientes (fuera de scope actual)
 
-- □ macOS daemon (Fase 5)
 - □ DLP a nivel kernel (eBPF network + DLP integration)
 - □ Seccomp BPF filter en bwrap
 - □ Tests E2E en VM Windows física

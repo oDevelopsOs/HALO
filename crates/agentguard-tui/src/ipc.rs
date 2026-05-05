@@ -1,7 +1,7 @@
 //! Cliente IPC para comunicarse con el daemon AgentGuard.
 //!
 //! Usa el mismo protocolo JSON-line que la CLI.
-//! Unix sockets en Linux/macOS. Stub en Windows.
+//! Unix sockets en Linux.
 
 #![allow(dead_code)]
 

@@ -18,7 +18,7 @@
 //!    entorno.
 //!
 //! Este módulo compila en cualquier plataforma pero el backend real
-//! solo funciona en Windows. En Linux/macOS se provee un stub que
+//! solo funciona en Windows. En Linux se provee un stub que
 //! retorna error al intentar cualquier operación.
 
 // ── Platform-independent imports ─────────────────────────────

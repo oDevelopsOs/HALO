@@ -49,8 +49,7 @@ die()     { printf "${RED}${BOLD}  ✗${NC} %s\n" "$*" >&2; exit 1; }
 detect_os() {
     case "$(uname -s)" in
         Linux)  echo "linux" ;;
-        Darwin) echo "macos" ;;
-        *)      die "Unsupported OS: $(uname -s). AgentGuard currently runs on Linux." ;;
+        *)      die "Unsupported OS: $(uname -s). AgentGuard currently runs on Linux and Windows." ;;
     esac
 }
 

@@ -10,7 +10,7 @@ maliciosos contra el daemon) ver `test-env/README.md`.
 
 ### Host
 
-- Linux (preferente: Ubuntu 22.04+ o Fedora 38+). Windows/macOS son secundarios hasta Fase 4.
+- Linux (preferente: Ubuntu 22.04+ o Fedora 38+). Windows es secundario hasta Fase 4.
 - Rust stable + nightly (se gestiona vía `rust-toolchain.toml`).
 - `clang`, `llvm`, `libelf-dev`, `pkg-config`, `libssl-dev` para compilar bpf-linker y dependencias nativas.
 - Docker 24+ **o** Multipass **o** libvirt si quieres levantar la VM de pruebas.

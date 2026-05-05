@@ -1,7 +1,7 @@
 # AgentGuard — Especificación Técnica Completa
 
 > **Documento de referencia para implementación automatizada**
-> Versión 1.0 — Prioridad: Linux > Windows > macOS
+> Versión 1.0 — Prioridad: Linux > Windows
 
 ---
 
@@ -14,7 +14,7 @@
 5. [Stack técnico completo](#5-stack-técnico-completo)
 6. [Módulo 1 — Kernel Guard (Linux eBPF)](#6-módulo-1--kernel-guard-linux-ebpf)
 7. [Módulo 2 — Kernel Guard (Windows)](#7-módulo-2--kernel-guard-windows)
-8. [Módulo 3 — Kernel Guard (macOS)](#8-módulo-3--kernel-guard-macos)
+8. [Módulo 3 — (Eliminado: macOS fuera de scope)](#8-módulo-3--kernel-guard-macos)
 9. [Módulo 4 — Vault (snapshots)](#9-módulo-4--vault-snapshots)
 10. [Módulo 5 — DLP Proxy (API key leaks)](#10-módulo-5--dlp-proxy-api-key-leaks)
 11. [Módulo 6 — Daemon principal](#11-módulo-6--daemon-principal)
@@ -80,7 +80,6 @@
 |---|---|---|
 | Linux | Ubuntu 22.04 / Debian 12 / Fedora 38 | eBPF LSM (aya) |
 | Windows | Windows 10 21H2 (build 19044) | Job Objects + SYSTEM Service |
-| macOS | macOS 13 Ventura | Endpoint Security Framework |
 
 ### Código
 
@@ -105,8 +104,8 @@
 │  Windows: SYSTEM Service                                │
 │    └─ Administra NTFS ACLs + Job Objects               │
 │                                                         │
-│  macOS: System Extension                                │
-│    └─ Endpoint Security Framework                       │
+│  System Extension                                │
+│    └─                        │
 └────────────────────────┬────────────────────────────────┘
                          │ ring buffer / perf events
 ┌────────────────────────▼────────────────────────────────┐
@@ -134,11 +133,11 @@ Usuario ejecuta:  curl -fsSL https://get.agentguard.io | bash
 Script detecta SO + arquitectura
     │
     ├── Linux   → descarga agentguard-cli + agentguard-linux + eBPF bytecode
-    ├── macOS   → descarga agentguard-cli + agentguard-macos
+    ├──  agentguard-cli + agentguard-macos
     └── Windows → descarga agentguard-cli + agentguard-windows
     │
     ▼
-Instala + configura servicio (systemd/launchd/Windows Service)
+Instala + configura servicio (systemd/Windows Service)
     │
     ▼
 Listo.  agentguard status   (CLI)
@@ -186,7 +185,7 @@ agentguard/
 ├── CHANGELOG.md
 ├── .github/
 │   └── workflows/
-│       └── ci.yml                # build matrix: Linux + Windows + macOS
+│       └── ci.yml                # build matrix: Linux + Windows
 │
 ├── crates/
 │   │
@@ -219,11 +218,11 @@ agentguard/
 │   │       ├── main.rs
 │   │       └── guard.rs          # WindowsGuard (NTFS DENY ACEs + Job Objects)
 │   │
-│   ├── agentguard-macos/         # BINARIO: daemon macOS (Fase 5)
+│   ├──         # BINARIO: daemon macOS (Fase 5)
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── main.rs
-│   │       └── guard.rs          # MacOsGuard (EndpointSecurity + chflags fallback)
+│   │       └── guard.rs          # 
 │   │
 │   ├── agentguard-ebpf/          # Programas eBPF (kernel, nightly)
 │   │   ├── Cargo.toml            # target = bpfel-unknown-none
@@ -252,7 +251,7 @@ agentguard/
 │   ├── windows/
 │   │   └── installer.iss         # Inno Setup script
 │   └── macos/
-│       └── launchd.plist
+│       └── systemd.plist
 │
 ├── scripts/
 │   ├── build-ebpf.sh             # Compila bytecode eBPF
@@ -309,11 +308,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # IPC
-tokio-unix-socket = "0.1"         # Linux/macOS
+tokio-unix-socket = "0.1"         # Linux
 interprocess = "2"                 # Cross-platform (incluye Windows Named Pipes)
 
 # Notificaciones nativas
-notify-rust = "4"                  # Linux/macOS
+notify-rust = "4"                  # Linux
 # Windows: usar win32 API directamente
 
 # Hashing para checksums del vault e integridad de updates
@@ -878,64 +877,6 @@ pub mod windows_guard {
 
 ---
 
-## 8. Módulo 3 — Kernel Guard (macOS)
-
-### Estrategia
-
-Usar **Endpoint Security Framework** vía System Extension (requiere entitlements de Apple — para distribución inicial usar notarización estándar y `com.apple.developer.endpoint-security.client`).
-
-```rust
-#[cfg(target_os = "macos")]
-pub mod macos_guard {
-    // Bindings via FFI a EndpointSecurity.framework
-    // ES_EVENT_TYPE_AUTH_UNLINK — llamada de autorización, puede ser denegada
-    // ES_EVENT_TYPE_AUTH_RENAME — igual
-    
-    // ESTRATEGIA macOS:
-    //
-    // - v1.0: Endpoint Security Framework System Extension en Swift, comunicado
-    //   con el daemon Rust por XPC. ES_EVENT_TYPE_AUTH_UNLINK / AUTH_RENAME /
-    //   AUTH_OPEN permiten denegar la operación. Esto es el equivalente macOS
-    //   de eBPF LSM y SÍ es la protección real.
-    //
-    //   Requisitos: entitlement com.apple.developer.endpoint-security.client
-    //   (Apple lo concede a empresas con justificación de seguridad), Developer
-    //   ID + notarización. Sin esto NO se puede distribuir.
-    //
-    // - El uso de `chflags uchg` queda SOLO como modo "degraded" cuando el
-    //   System Extension no está instalado/aprobado. NO se considera protección
-    //   real porque cualquier proceso del usuario puede ejecutar `chflags nouchg`.
-    //   En ese modo el daemon avisa al usuario al arrancar.
-    
-    pub fn protect_with_uchg(path: &std::path::Path) -> Result<(), anyhow::Error> {
-        // Modo degradado — usar SOLO si el System Extension no está activo.
-        let status = std::process::Command::new("chflags")
-            .arg("uchg")
-            .arg(path)
-            .status()?;
-        
-        if !status.success() {
-            anyhow::bail!("chflags failed for {:?}", path);
-        }
-        Ok(())
-    }
-    
-    pub fn unprotect_uchg(path: &std::path::Path) -> Result<(), anyhow::Error> {
-        let status = std::process::Command::new("chflags")
-            .arg("nouchg")
-            .arg(path)
-            .status()?;
-        
-        if !status.success() {
-            anyhow::bail!("chflags nouchg failed for {:?}", path);
-        }
-        Ok(())
-    }
-}
-```
-
----
-
 ## 9. Módulo 4 — Vault (snapshots)
 
 ### Objetivo
@@ -1189,7 +1130,7 @@ Internet
 >    en `~/.agentguard/ca/` con permisos 600.
 > 2. El instalador (`install.sh` / Inno Setup) añade la CA al trust store del
 >    sistema (Linux: `update-ca-certificates`; Windows: `certutil -addstore`;
->    macOS: `security add-trusted-cert`). Mostrar consentimiento explícito.
+>    `security add-trusted-cert`). Mostrar consentimiento explícito.
 > 3. El proxy genera certs leaf on-the-fly por hostname firmados por la CA
 >    local cuando recibe un `CONNECT host:443`.
 > 4. La CA root **nunca** sale de la máquina y es desinstalada al hacer
@@ -1606,7 +1547,7 @@ impl AgentGuardDaemon {
     }
 }
 
-/// IPC server — socket Unix en Linux/macOS, Named Pipe en Windows
+/// IPC server — socket Unix en Linux, Named Pipe en Windows
 mod ipc_server {
     use serde::{Deserialize, Serialize};
 
@@ -1641,7 +1582,7 @@ mod ipc_server {
         -> Result<(), anyhow::Error> 
     {
         // Usar interprocess crate para cross-platform IPC
-        // Socket path: ~/.agentguard/daemon.sock (Linux/macOS)
+        // Socket path: ~/.agentguard/daemon.sock (Linux)
         //              \\.\pipe\AgentGuard (Windows)
         Ok(())
     }
@@ -1988,7 +1929,7 @@ fn main() {
 2. Compara versión actual (semver) con la del release
 3. Si hay nueva versión: descarga el binario para el OS/arch actual
 4. Verifica SHA256 (publicado en `checksums.txt` del release)
-5. Reemplaza el binario en caliente (en Linux/macOS atomically via rename)
+5. Reemplaza el binario en caliente (en Linux atomically via rename)
 6. Reinicia el daemon
 
 ### updater.rs
@@ -2097,7 +2038,7 @@ fn verify_checksum(data: &[u8], filename: &str, checksums: &str) -> Result<(), a
 ## 15. Configuración (config.toml)
 
 Ubicación:
-- Linux/macOS: `~/.agentguard/config.toml`
+- Linux: `~/.agentguard/config.toml`
 - Windows: `%APPDATA%\AgentGuard\config.toml`
 
 ```toml
@@ -2461,10 +2402,10 @@ jobs:
             target: x86_64-pc-windows-msvc
             artifact: agentguard-x86_64-windows.zip
           - os: macos-latest
-            target: x86_64-apple-darwin
+            target: 
             artifact: agentguard-x86_64-macos.tar.gz
           - os: macos-latest
-            target: aarch64-apple-darwin
+            target: 
             artifact: agentguard-aarch64-macos.tar.gz
 
     runs-on: ${{ matrix.os }}
@@ -2477,7 +2418,7 @@ jobs:
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
       
-      - name: Package (Linux/macOS)
+      - name: Package (Linux)
         if: runner.os != 'Windows'
         run: |
           tar czf ${{ matrix.artifact }} \
@@ -2538,9 +2479,9 @@ CLI con todos los comandos. Installer que detecta SO y descarga solo lo necesari
 
 NTFS DENY ACEs + Job Objects + Windows Service.
 
-### Fase 5 — macOS daemon
+### Fase 5 — 
 
-EndpointSecurity Framework + chflags fallback.
+Eliminada del MVP.
 
 ### Fase 6 — UI Tauri (opcional)
 

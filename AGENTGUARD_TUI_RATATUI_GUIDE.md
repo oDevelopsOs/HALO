@@ -18,7 +18,7 @@
 | **Estabilidad en producción**  | **Excelente** (usado por lazygit, bottom, gitui, Netflix, OpenAI) | Buena | Nueva (2024) | Buena | Buena | **Ganador** |
 | **Actualizaciones automáticas**| Nativo (self_update + atomic replace) | Manual | Manual | Manual | Manual | **Ganador** |
 | **Integración con Rust daemon**| **Nativa** (mismo ecosistema) | Nativa | Nativa | Requiere FFI     | Requiere gRPC/HTTP | **Ganador** |
-| **Soporte cross-platform**     | Excelente (Linux/Windows/macOS) | Bueno | Bueno | Bueno | Bueno | Empate |
+| **Soporte cross-platform**     | Excelente (Linux/Windows) | Bueno | Bueno | Bueno | Bueno | Empate |
 | **Comunidad 2026**             | **> 20k estrellas**, fork oficial de tui-rs, activo | Media | Baja | Alta | Alta | **Ganador** |
 
 **Conclusión:**  
@@ -176,7 +176,7 @@ if status.updated() {
 **Ventajas:**
 - Usa los releases de GitHub (ya los tienes en tu CI)
 - Verifica SHA256 automáticamente (checksums.txt)
-- El binario se reemplaza **atómicamente** (rename sobre el ejecutable en ejecución en Linux/macOS)
+- El binario se reemplaza **atómicamente** (rename sobre el ejecutable en ejecución en Linux)
 
 ### Fase 2 (futuro): Tu propio servidor HTTP/HTTPS
 
@@ -331,7 +331,7 @@ anyhow = "1"
 thiserror = "1"
 chrono = "0.4"                    # Para timestamps bonitos
 self_update = { version = "0.40", features = ["archive-tar", "archive-zip", "compression-flate2"] }
-notify-rust = "4"                 # Notificaciones desktop (Linux/macOS)
+notify-rust = "4"                 # Notificaciones desktop (Linux)
 interprocess = "2"                # Named Pipes en Windows
 tui-input = "0.9"                 # Input field bonito (opcional)
 ```

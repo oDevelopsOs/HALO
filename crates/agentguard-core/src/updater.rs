@@ -281,8 +281,6 @@ fn extract_tar_gz(data: &[u8], bin_name: &str) -> Result<Vec<u8>, UpdateError> {
 fn detect_platform() -> (&'static str, &'static str) {
     let os = if cfg!(target_os = "linux") {
         "linux"
-    } else if cfg!(target_os = "macos") {
-        "macos"
     } else if cfg!(target_os = "windows") {
         "windows"
     } else {
@@ -343,7 +341,7 @@ mod tests {
         let (os, arch) = detect_platform();
         assert!(!os.is_empty());
         assert!(!arch.is_empty());
-        assert!(["linux", "macos", "windows"].contains(&os));
+        assert!(["linux", "windows"].contains(&os));
     }
 
     #[test]

@@ -2,7 +2,6 @@
 //!
 //! Detects the operating system and architecture, then:
 //!   Linux   → downloads agentguard-cli + agentguard-linux (~6 MB)
-//!   macOS   → downloads agentguard-cli + agentguard-macos (~5 MB)
 //!   Windows → downloads agentguard-cli + agentguard-windows (~8 MB)
 //!
 //! SHA256 verified, system service auto-configured.
@@ -97,7 +96,6 @@ WantedBy=multi-user.target
 
 enum Platform {
     Linux,
-    MacOs,
     Windows,
 }
 
@@ -105,7 +103,6 @@ impl std::fmt::Display for Platform {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Linux => write!(f, "Linux"),
-            Self::MacOs => write!(f, "macOS"),
             Self::Windows => write!(f, "Windows"),
         }
     }
@@ -120,7 +117,6 @@ struct Target {
 fn detect() -> Target {
     let platform = match env::consts::OS {
         "linux" => Platform::Linux,
-        "macos" => Platform::MacOs,
         _ => Platform::Windows,
     };
     let arch = match env::consts::ARCH {
@@ -132,14 +128,9 @@ fn detect() -> Target {
         "{arch}-unknown-{}-{}",
         match platform {
             Platform::Linux => "linux",
-            Platform::MacOs => "apple",
             Platform::Windows => "pc-windows",
         },
-        if matches!(platform, Platform::MacOs) {
-            "darwin"
-        } else {
-            "gnu"
-        }
+        "gnu"
     );
     Target {
         platform,
@@ -218,13 +209,6 @@ fn install_linux(target: &Target, version: &str) -> Result<()> {
     println!("✓ AgentGuard installed on {}", target.platform);
     println!("  agentguard status       # check protection");
     println!("  agentguard protect ~/Documents  # protect a folder");
-    Ok(())
-}
-
-fn install_macos(_target: &Target, _version: &str) -> Result<()> {
-    println!(
-        "  macOS support — Fase 5 (build from source: cargo build -p agentguard-macos --release)"
-    );
     Ok(())
 }
 
@@ -334,7 +318,6 @@ fn main() -> Result<()> {
 
     match target.platform {
         Platform::Linux => install_linux(&target, &version)?,
-        Platform::MacOs => install_macos(&target, &version)?,
         Platform::Windows => install_windows(&target, &version)?,
     }
 

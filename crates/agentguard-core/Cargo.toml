@@ -42,7 +42,7 @@ uuid = { workspace = true }
 clap = { workspace = true }
 
 # Userspace fallback para filesystem watching (guard trait, no impls).
-notify = { version = "6", default-features = false, features = ["macos_kqueue"] }
+notify = { version = "6", default-features = false }
 async-trait = "0.1"
 
 # HTTP DLP proxy (hyper 1.x).

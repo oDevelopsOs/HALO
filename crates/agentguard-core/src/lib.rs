@@ -1,6 +1,6 @@
 //! Biblioteca interna del daemon AgentGuard — lógica compartida para todas las plataformas.
 //!
-//! Los binarios por SO (`agentguard-linux`, `agentguard-windows`, `agentguard-macos`)
+//! Los binarios por SO (`agentguard-linux`, `agentguard-windows`)
 //! dependen de esta lib y solo añaden su implementación específica del trait `KernelGuard`.
 
 pub mod ca;

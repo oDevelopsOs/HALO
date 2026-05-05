@@ -8,9 +8,9 @@ Implementación incremental de AgentGuard en Rust. **Terminal-first** (CLI como 
 
 ### ¿Por qué separar por SO?
 
-Linux (eBPF LSM), Windows (NTFS DENY ACEs + Job Objects) y macOS (EndpointSecurity) usan APIs de kernel radicalmente distintas, con dependencias incompatibles entre sí. Un solo binario monolítico con `#[cfg]` se vuelve:
+Linux (eBPF LSM) y Windows (NTFS DENY ACEs + Job Objects) usan APIs de kernel radicalmente distintas, con dependencias incompatibles entre sí. Un solo binario monolítico con `#[cfg]` se vuelve:
 
-- **Dependencias infladas**: Linux necesita `aya`, Windows necesita `windows-rs`, macOS necesita FFI a EndpointSecurity. Cada una pesa ~5-10 MB extra.
+- **Dependencias infladas**: Linux necesita `aya`, Windows necesita `windows-rs`. Cada una pesa ~5-10 MB extra.
 - **CI compleja**: Hay que cross-compilar o tener runners de cada OS.
 - **Releases inflados**: El usuario baja un binario de 40 MB que contiene código que nunca ejecutará.
 
@@ -28,19 +28,16 @@ Usuario ejecuta:  curl -fsSL https://get.agentguard.io | bash
                           ▼
                   Script detecta SO + arch
                   ┌──────────────────────────────┐
-                  │ Linux → baja agentguard-cli   │
-                  │         + agentguard-linux    │
-                  │         + eBPF bytecode       │
-                  │                                │
-                  │ macOS → baja agentguard-cli    │
-                  │         + agentguard-macos     │
-                  │                                │
-                  │ Win   → baja agentguard-cli    │
-                  │         + agentguard-windows   │
-                  └──────────────────────────────┘
-                          │
-                          ▼
-                  Instala + systemd/launchd/service
+                   │ Linux → baja agentguard-cli   │
+                   │         + agentguard-linux    │
+                   │         + eBPF bytecode       │
+                   │                                │
+                   │ Win   → baja agentguard-cli    │
+                   │         + agentguard-windows   │
+                   └──────────────────────────────┘
+                           │
+                           ▼
+                   Instala + systemd/service
 ```
 
 ---
@@ -96,7 +93,7 @@ crates/
 │   └── main.rs              clap → IPC → output formateado
 │
 ├── agentguard-installer/    Scripts de instalación por SO
-│   ├── install.sh           Linux/macOS (detecta SO, baja binario correcto)
+│   ├── install.sh           Linux (detecta SO, baja binario correcto)
 │   ├── install.ps1          Windows
 │   └── uninstall.sh         Limpieza
 │
@@ -114,7 +111,6 @@ members = [
     "crates/agentguard-core",
     "crates/agentguard-linux",
     "crates/agentguard-windows",
-    "crates/agentguard-macos",
     "crates/agentguard-cli",
     "crates/agentguard-installer",
     "crates/agentguard-tui",
@@ -124,16 +120,16 @@ exclude = ["crates/agentguard-ebpf"]
 
 ### Build matrix por SO
 
-| Crate | Linux | Windows | macOS | CI runner |
-|---|---|---|---|---|
-| `agentguard-common` | ✓ | ✓ | ✓ | ubuntu |
-| `agentguard-core` | ✓ | ✓ | ✓ | ubuntu + windows + macos |
-| `agentguard-linux` | ✓ | ✗ | ✗ | ubuntu |
-| `agentguard-windows` | ✗ | ✓ | ✗ | windows |
-| `agentguard-ebpf` | ✓ | ✗ | ✗ | ubuntu (nightly) |
-| `agentguard-cli` | ✓ | ✓ | ✓ | ubuntu (cross) |
-| `agentguard-installer` | ✓ | ✓ | ✓ | ubuntu |
-| `agentguard-tui` | ✓ | ✓ | ✓ | ubuntu |
+| Crate | Linux | Windows | CI runner |
+|---|---|---|---|
+| `agentguard-common` | ✓ | ✓ | ubuntu |
+| `agentguard-core` | ✓ | ✓ | ubuntu + windows |
+| `agentguard-linux` | ✓ | ✗ | ubuntu |
+| `agentguard-windows` | ✗ | ✓ | windows |
+| `agentguard-ebpf` | ✓ | ✗ | ubuntu (nightly) |
+| `agentguard-cli` | ✓ | ✓ | ubuntu (cross) |
+| `agentguard-installer` | ✓ | ✓ | ubuntu |
+| `agentguard-tui` | ✓ | ✓ | ubuntu |
 
 ---
 
@@ -147,11 +143,10 @@ exclude = ["crates/agentguard-ebpf"]
 [ ] 0.2  Crear agentguard-linux: mover guard/ebpf.rs, guard/userspace.rs, main.rs.
          Depende de: agentguard-core + agentguard-common.
 [ ] 0.3  Crear agentguard-windows: stub con guard.rs (WindowsGuard) + main.rs.
-[ ] 0.4  Crear agentguard-macos: stub con guard.rs (MacOsGuard) + main.rs.
-[ ] 0.5  Actualizar Cargo.toml raíz con los nuevos members.
-[ ] 0.6  Actualizar CI: build-linux, build-windows, build-macos como jobs separados.
-[ ] 0.7  Deprecar agentguard-daemon (eliminar al final de la fase).
-[ ] 0.8  Verificar: cargo build --workspace --exclude agentguard-ebpf (Linux).
+[ ] 0.4  Actualizar Cargo.toml raíz con los nuevos members.
+[ ] 0.5  Actualizar CI: build-linux, build-windows como jobs separados.
+[ ] 0.6  Deprecar agentguard-daemon (eliminar al final de la fase).
+[ ] 0.7  Verificar: cargo build --workspace --exclude agentguard-ebpf (Linux).
 ```
 
 **Gate:** `cargo build` verde para todos los crates del workspace en Linux.
@@ -209,9 +204,9 @@ exclude = ["crates/agentguard-ebpf"]
 [x] 3.2  Output con crossterm: tablas, colores (verde/rojo/amarillo), emojis de estado.
 [x] 3.3  `agentguard init --defaults`: genera config.toml inicial.
 [x] 3.4  install.sh: detecta SO, baja binario correcto de GitHub Releases,
-         verifica SHA256, instala, configura systemd/launchd/service.
+         verifica SHA256, instala, configura systemd/service.
 [x] 3.5  install.ps1: equivalente para Windows.
-[x] 3.6  systemd unit (Linux) + launchd plist (macOS) + Windows Service.
+[x] 3.6  systemd unit (Linux) + Windows Service.
 [x] 3.7  CI release: build matrix por SO, artifacts separados, checksums.
 [ ] 3.8  Dogfooding: VM limpia → `curl | bash` → `agentguard status` funciona.
 ```
@@ -227,7 +222,7 @@ exclude = ["crates/agentguard-ebpf"]
 > - `cargo clippy --workspace -- -D warnings` → 0 warnings
 > - `scripts/check-no-panic.sh` → 0 unwrap/expect/panic en producción
 > - 13/13 comandos IPC funcionales en daemon
-> - Scripts bootstrap listos para Linux, macOS y Windows
+> - Scripts bootstrap listos para Linux y Windows
 > - Scripts de desinstalación completos
 > - `agentguard-windows` compila en Linux (stubs cross-platform + implementación completa en `#[cfg(windows)]`)
 > - IPC server implementa `Incidents` (JSONL real), `Pause`/`Resume` (AtomicBool + auto-resume timer), `Protect`/`Unprotect` (mutación en runtime), `LaunchAgent` (sandbox con callback), `AddProtectedPath`
@@ -256,10 +251,8 @@ ejecutan en Windows).
 **Pendiente:** Test E2E requiere VM Windows física.
 **Sandbox:** AppContainer funcional (Windows 8+), LPAC parcial (requiere capabilities SID).
 
-### Fase 5 — macOS daemon (POSTERGADO)
+### Fase 5 — Eliminada (macOS fuera de scope MVP)
 
-```
-[ ] 5.1  agentguard-macos/guard.rs: Endpoint Security Framework System Extension.
 ```
 
 ### Fase 6 — TUI Terminal (ratatui + crossterm) ✓ COMPLETADA
@@ -309,12 +302,12 @@ Ejecutar antes de cada merge a `main`:
 
 | Fase | Artefactos |
 |---|---|
-| 0 | Workspace reorganizado. Core + Linux + Windows + macOS crates compilando. |
+| 0 | Workspace reorganizado. Core + Linux + Windows crates compilando. |
 | 1 | `agentguard-core` con vault, DLP, CA, IPC, eventos. ≥40 tests pasando. |
 | 2 | Daemon Linux bloquea `unlink` real vía eBPF LSM + fallback userspace. |
 | 3 | CLI funcional + installer que detecta SO y baja solo lo necesario. `curl` → listo. |
 | 4 | Daemon Windows con NTFS DENY ACEs + Job Objects + ETW + AppContainer. |
-| 5 | Daemon macOS con EndpointSecurity (postergado). |
+| 5 | ~~macOS~~ (Eliminado del MVP). |
 | 6 | TUI Terminal (ratatui + crossterm, 4 tabs) — reemplaza Tauri. |
 | 7 | Auto-updater (ureq 3, GitHub Releases, SHA256, tar.gz, atomic replace). |
 
@@ -324,7 +317,6 @@ Ejecutar antes de cada merge a `main`:
 
 - **eBPF LSM no disponible**: fallback userspace automático. Usar VM Ubuntu 24.04 para tests.
 - **Windows requiere firma EV para driver kernel**: por eso usamos NTFS ACLs + Job Objects (userspace) en vez de driver. Protección al 95%.
-- **macOS EndpointSecurity requiere entitlement de Apple**: plan B es `chflags uchg` (degraded). El entitlement se tramita en paralelo.
 - **HTTPS MITM rompe cert pinning**: whitelist de hosts a no-MITM, configurable.
 - **Root en el daemon**: `AmbientCapabilities` mínimo, `ProtectHome=read-only`, `ProtectSystem=strict`.
 - **Sincronización de versiones entre crates**: todos usan `version.workspace = true`. Release CI publica todos juntos.

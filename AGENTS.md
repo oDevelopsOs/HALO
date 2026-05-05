@@ -100,7 +100,6 @@ crates/
 │   └── NO contiene implementaciones de guard específicas de SO
 ├── agentguard-linux/        Binario Linux (eBPF + userspace fallback)
 ├── agentguard-windows/      Binario Windows (Fase 4)
-├── agentguard-macos/        Binario macOS (Fase 5)
 ├── agentguard-ebpf/         Programas eBPF kernel (compilación separada, nightly)
 ├── agentguard-tui/         TUI terminal (ratatui + crossterm)
 ├── agentguard-cli/          CLI cross-platform (único binario para todos)
@@ -114,7 +113,6 @@ crates/
 | Config, Vault, DLP, CA, IPC, eventos, guard trait | `agentguard-core` |
 | eBPF loader (aya), userspace notify | `agentguard-linux` |
 | NTFS ACLs, Job Objects, Win Service | `agentguard-windows` |
-| EndpointSecurity, chflags | `agentguard-macos` |
 | Comandos CLI, output formateado | `agentguard-cli` |
 | Scripts de instalación | `agentguard-installer` |
 | Dashboard, Zones, Incidents UI | `agentguard-tui` |
@@ -138,8 +136,7 @@ use agentguard_common::{IpcCommand, IpcResponse, PathPrefix};
 
 - `agentguard-linux` usa `#[cfg(feature = "ebpf")]` para aya
 - Sin `--features ebpf`, el daemon Linux compila con solo userspace fallback
-- `agentguard-windows` está en el workspace hasta que se implemente (Fase 4)
-- `agentguard-macos` (Fase 5) no está en el workspace actualmente
+- `agentguard-windows` está en el workspace (Fase 4+8 completadas)
 
 ---
 
@@ -214,7 +211,7 @@ cargo build -p agentguard-linux --features ebpf
 |---|---|
 | **HALO** | Nombre clave del proyecto |
 | **AgentGuard** | Nombre público del producto |
-| **Guard** | Backend de protección (eBPF, userspace, Windows, macOS) |
+| **Guard** | Backend de protección (eBPF, userspace, Windows) |
 | **Vault** | Sistema de snapshots con deduplicación BLAKE3 |
 | **DLP** | Data Loss Prevention — proxy HTTP/HTTPS que detecta secretos |
 | **MITM** | Man-in-the-Middle — interceptación HTTPS con CA local |
@@ -233,7 +230,7 @@ cargo build -p agentguard-linux --features ebpf
 | **2** | ✓ Completada | Linux daemon funcional (eBPF + userspace, systemd, VM tests, SIGTERM, incidentes disk) |
 | **3** | ✓ Completada | CLI cross-platform + installer con detección de SO |
 | **4** | ✓ Completada | Windows daemon (NTFS DENY ACEs + Job Objects) |
-| **5** | □ Pendiente | macOS daemon (EndpointSecurity + chflags) |
+| **5** | — Eliminada | macOS daemon — fuera de scope MVP |
 | **6** | ✓ Completada | TUI Terminal (ratatui + crossterm, 4 tabs) |
 | **7** | ✓ Completada | Auto-updater (ureq 3, GitHub Releases, SHA256) |
 | **8** | ✓ Completada | Windows hardening (AppContainer, PEB, Named Pipes, tests E2E) |
