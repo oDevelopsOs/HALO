@@ -89,12 +89,22 @@ impl SandboxLauncher {
         cmd.args(["--ro-bind", agent_str, agent_str]);
 
         // ── Aislamiento de namespaces ────────────────────────────────────────
-        // NOTA: NO usamos --unshare-net para que el DLP proxy funcione
+        // NOTA: NO usamos --unshare-net para que el DLP proxy funcione.
+        // Esto significa que el agente puede hacer conexiones de red directas
+        // (bypasseando el proxy DLP). Mitigación: el proxy se inyecta vía env vars.
+        // TODO: Añadir --seccomp con filtro de syscalls para reducir superficie de ataque
+        // (mount, ptrace, bpf, unshare). Requiere compilar un filtro BPF por separado.
         cmd.args([
             "--unshare-pid",
             "--unshare-ipc",
             "--unshare-uts",
             "--unshare-user",
+            // --init: crea un proceso init (PID 1) en el namespace PID
+            // que reapea procesos huérfanos (previene zombie leak).
+            "--init",
+            // --unshare-cgroup-try: intenta aislar cgroup namespace.
+            // Falla silenciosamente si el kernel no lo soporta.
+            "--unshare-cgroup-try",
         ]);
 
         if self.config.sandbox.morir_con_padre {

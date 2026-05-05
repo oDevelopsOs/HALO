@@ -627,7 +627,7 @@ mod win32 {
             let result = SetNamedSecurityInfoW(
                 PCWSTR::from_raw(path_wide.as_ptr()),
                 SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
                 None,
                 None,
                 Some(new_dacl),

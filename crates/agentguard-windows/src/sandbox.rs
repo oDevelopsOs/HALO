@@ -132,10 +132,10 @@ mod windows_impl {
                 .collect();
 
             // 6. Set proxy environment variables for DLP
+            // NOTE: CreateProcessW with lpEnvironment=None inherits parent env.
+            // We set/remove vars around the call to avoid polluting the daemon.
+            // This is safe because the daemon is single-threaded at this point.
             let dlp_proxy = format!("http://127.0.0.1:{}", self.config.dlp.proxy_port);
-            // Environment is inherited from parent; we inject proxy vars via the
-            // process environment block. For simplicity, let CreateProcessW inherit
-            // and we rely on the parent having set these.
             std::env::set_var("HTTP_PROXY", &dlp_proxy);
             std::env::set_var("HTTPS_PROXY", &dlp_proxy);
             std::env::set_var("NO_PROXY", "localhost,127.0.0.1");
@@ -157,6 +157,11 @@ mod windows_impl {
                     &mut pi,
                 )
             };
+
+            // Clean up proxy vars from daemon environment
+            std::env::remove_var("HTTP_PROXY");
+            std::env::remove_var("HTTPS_PROXY");
+            std::env::remove_var("NO_PROXY");
 
             // Always clean up attribute list and capabilities
             unsafe { DeleteProcThreadAttributeList(attr_list) };

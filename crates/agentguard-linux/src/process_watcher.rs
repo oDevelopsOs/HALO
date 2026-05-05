@@ -270,6 +270,11 @@ fn kill_process(pid: u32) {
 }
 
 // ── FNV-1a hash (mismo algoritmo que en eBPF) ────────────────────────────────
+//
+// NOTA: FNV-1a no es criptográfico — colisiones intencionales son factibles.
+// Un atacante podría crear un nombre de ejecutable que haga hash al mismo valor
+// que un agente conocido. Mitigación: el handler userspace verifica el path real
+// vía /proc/<pid>/exe y /proc/<pid>/comm antes de actuar (verify_pid_comm).
 
 pub fn fnv1a_hash(s: &str) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
