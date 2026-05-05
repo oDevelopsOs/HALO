@@ -242,11 +242,9 @@ fn install_windows(target: &Target, version: &str) -> Result<()> {
     let cli = download(&cli_url)
         .with_context(|| format!("download agentguard CLI for {}", target.triple))?;
     let install_dir = r"C:\Program Files\AgentGuard";
-    std::fs::create_dir_all(install_dir)
-        .with_context(|| format!("create {install_dir}"))?;
+    std::fs::create_dir_all(install_dir).with_context(|| format!("create {install_dir}"))?;
     let cli_path = format!("{install_dir}\\agentguard.exe");
-    std::fs::write(&cli_path, &cli)
-        .with_context(|| format!("write {cli_path}"))?;
+    std::fs::write(&cli_path, &cli).with_context(|| format!("write {cli_path}"))?;
 
     // 2. Download daemon
     let daemon_name = format!("agentguard-windows-{triple}.exe", triple = target.triple);
@@ -255,13 +253,11 @@ fn install_windows(target: &Target, version: &str) -> Result<()> {
     let daemon = download(&daemon_url)
         .with_context(|| format!("download agentguard-windows for {}", target.triple))?;
     let daemon_path = format!("{install_dir}\\agentguard-windows.exe");
-    std::fs::write(&daemon_path, &daemon)
-        .with_context(|| format!("write {daemon_path}"))?;
+    std::fs::write(&daemon_path, &daemon).with_context(|| format!("write {daemon_path}"))?;
 
     // 3. Config
     let config_dir = r"C:\ProgramData\AgentGuard";
-    std::fs::create_dir_all(config_dir)
-        .with_context(|| format!("create {config_dir}"))?;
+    std::fs::create_dir_all(config_dir).with_context(|| format!("create {config_dir}"))?;
     let config_path = format!("{config_dir}\\config.toml");
     if !std::path::Path::new(&config_path).exists() {
         println!("  → config.toml...");
@@ -272,11 +268,16 @@ fn install_windows(target: &Target, version: &str) -> Result<()> {
     println!("  → Registering Windows Service...");
     let sc_status = std::process::Command::new("sc.exe")
         .args([
-            "create", "AgentGuard",
-            "binPath=", &format!("{daemon_path} --service"),
-            "start=", "auto",
-            "type=", "own",
-            "obj=", "LocalSystem",
+            "create",
+            "AgentGuard",
+            "binPath=",
+            &format!("{daemon_path} --service"),
+            "start=",
+            "auto",
+            "type=",
+            "own",
+            "obj=",
+            "LocalSystem",
         ])
         .status();
     if let Err(e) = sc_status {

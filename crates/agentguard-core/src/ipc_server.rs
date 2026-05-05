@@ -489,11 +489,13 @@ impl IpcServer {
 mod named_pipe {
     use super::*;
     use std::io::{Read, Write};
-    use windows::Win32::Foundation::{CloseHandle, ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE};
+    use windows::Win32::Foundation::{
+        CloseHandle, ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE,
+    };
     use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile, PIPE_ACCESS_DUPLEX};
     use windows::Win32::System::Pipes::{
-        ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe,
-        PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+        ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
+        PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
     };
 
     /// Wrapper que implementa Read + Write para handles de Named Pipe.
@@ -510,15 +512,8 @@ mod named_pipe {
     impl Read for PipeStream {
         fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
             let mut bytes_read = 0u32;
-            unsafe {
-                ReadFile(
-                    self.handle,
-                    Some(buf),
-                    Some(&mut bytes_read),
-                    None,
-                )
-            }
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e:?}")))?;
+            unsafe { ReadFile(self.handle, Some(buf), Some(&mut bytes_read), None) }
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e:?}")))?;
             Ok(bytes_read as usize)
         }
     }
@@ -526,15 +521,8 @@ mod named_pipe {
     impl Write for PipeStream {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
             let mut bytes_written = 0u32;
-            unsafe {
-                WriteFile(
-                    self.handle,
-                    Some(buf),
-                    Some(&mut bytes_written),
-                    None,
-                )
-            }
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e:?}")))?;
+            unsafe { WriteFile(self.handle, Some(buf), Some(&mut bytes_written), None) }
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e:?}")))?;
             Ok(bytes_written as usize)
         }
 
@@ -568,10 +556,8 @@ mod named_pipe {
                     break;
                 }
 
-                let name_wide: Vec<u16> = full_name
-                    .encode_utf16()
-                    .chain(std::iter::once(0))
-                    .collect();
+                let name_wide: Vec<u16> =
+                    full_name.encode_utf16().chain(std::iter::once(0)).collect();
 
                 let pipe_handle: HANDLE = unsafe {
                     let h = CreateNamedPipeW(
@@ -599,12 +585,16 @@ mod named_pipe {
                 };
 
                 if !connected {
-                    unsafe { let _ = CloseHandle(pipe_handle); }
+                    unsafe {
+                        let _ = CloseHandle(pipe_handle);
+                    }
                     continue;
                 }
 
                 if shutdown_rx.try_recv().is_ok() {
-                    unsafe { let _ = CloseHandle(pipe_handle); }
+                    unsafe {
+                        let _ = CloseHandle(pipe_handle);
+                    }
                     break;
                 }
 
@@ -623,7 +613,10 @@ mod named_pipe {
 }
 
 #[cfg(windows)]
-fn start_named_pipe_server(server: IpcServer, pipe_name: String) -> Result<IpcShutdown, std::io::Error> {
+fn start_named_pipe_server(
+    server: IpcServer,
+    pipe_name: String,
+) -> Result<IpcShutdown, std::io::Error> {
     named_pipe::run_pipe_server(server, pipe_name)
 }
 

@@ -149,9 +149,7 @@ mod transport {
             lpOverlapped: *mut u8,
         ) -> i32;
 
-        fn CloseHandle(
-            hObject: isize,
-        ) -> i32;
+        fn CloseHandle(hObject: isize) -> i32;
     }
 }
 
@@ -195,9 +193,9 @@ mod transport {
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
-use agentguard_common::{IpcCommand, IpcResponse, IPC_PROTOCOL_VERSION};
 #[cfg(not(windows))]
 use agentguard_common::IPC_SOCKET_PATH;
+use agentguard_common::{IpcCommand, IpcResponse, IPC_PROTOCOL_VERSION};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use transport::connect;

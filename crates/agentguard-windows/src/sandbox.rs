@@ -19,13 +19,13 @@ mod windows_impl {
     use std::os::windows::ffi::OsStrExt;
     use std::path::Path;
 
+    use windows::core::PCWSTR;
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{
         CreateProcessW, DeleteProcThreadAttributeList, InitializeProcThreadAttributeList,
         UpdateProcThreadAttribute, EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST,
         PROCESS_INFORMATION, STARTUPINFOEXW,
     };
-    use windows::core::PCWSTR;
 
     use crate::helpers::win32::{
         self, free_app_container_sid, SecurityCapabilities,
@@ -109,12 +109,7 @@ mod windows_impl {
             let attr_list = LPPROC_THREAD_ATTRIBUTE_LIST(attr_list_ptr);
 
             unsafe {
-                InitializeProcThreadAttributeList(
-                    attr_list,
-                    ATTR_COUNT,
-                    0,
-                    &mut attr_list_size,
-                )?;
+                InitializeProcThreadAttributeList(attr_list, ATTR_COUNT, 0, &mut attr_list_size)?;
 
                 UpdateProcThreadAttribute(
                     attr_list,
@@ -130,10 +125,7 @@ mod windows_impl {
             si.lpAttributeList = attr_list;
 
             // 5. Build command line
-            let agent_wide: Vec<u16> = agent_exe
-                .encode_utf16()
-                .chain(std::iter::once(0))
-                .collect();
+            let agent_wide: Vec<u16> = agent_exe.encode_utf16().chain(std::iter::once(0)).collect();
             let cwd_wide: Vec<u16> = project_dir
                 .as_os_str()
                 .encode_wide()
@@ -141,10 +133,7 @@ mod windows_impl {
                 .collect();
 
             // 6. Set proxy environment variables for DLP
-            let dlp_proxy = format!(
-                "http://127.0.0.1:{}",
-                self.config.dlp.proxy_port
-            );
+            let dlp_proxy = format!("http://127.0.0.1:{}", self.config.dlp.proxy_port);
             // Environment is inherited from parent; we inject proxy vars via the
             // process environment block. For simplicity, let CreateProcessW inherit
             // and we rely on the parent having set these.

@@ -94,9 +94,7 @@ pub(crate) mod win32 {
 
     /// Lee la línea de comandos de un proceso remoto vía PEB.
     /// Retorna None si el proceso ya terminó o no se puede leer.
-    pub fn read_remote_command_line(
-        process: HANDLE,
-    ) -> Option<String> {
+    pub fn read_remote_command_line(process: HANDLE) -> Option<String> {
         // 1. Query PEB base address
         let mut pbi: ProcessBasicInformation = unsafe { std::mem::zeroed() };
         let ret = unsafe {
@@ -136,7 +134,8 @@ pub(crate) mod win32 {
         }
 
         let buf_bytes = cmdline_ustr.length as usize;
-        let buf = read_process_memory_slice(process, cmdline_ustr.buffer as *const c_void, buf_bytes)?;
+        let buf =
+            read_process_memory_slice(process, cmdline_ustr.buffer as *const c_void, buf_bytes)?;
 
         // 5. Convert UTF-16 → String
         let wchars: Vec<u16> = buf
@@ -182,8 +181,7 @@ pub(crate) mod win32 {
         }
 
         // Read _current_directory (CURDIR.DosPath UnicodeString, not raw bytes)
-        let cwd_field_addr =
-            unsafe { (params_addr as *const u8).add(CWD_OFFSET) as *const c_void };
+        let cwd_field_addr = unsafe { (params_addr as *const u8).add(CWD_OFFSET) as *const c_void };
         let dos_path_ustr =
             match read_process_memory_typed::<UnicodeString>(process, cwd_field_addr) {
                 Some(u) => u,
@@ -221,7 +219,13 @@ pub(crate) mod win32 {
         let mut buf = vec![0u8; size];
         let mut bytes_read = 0usize;
         let ret = unsafe {
-            ReadProcessMemory(process, base, buf.as_mut_ptr() as *mut c_void, size, Some(&mut bytes_read))
+            ReadProcessMemory(
+                process,
+                base,
+                buf.as_mut_ptr() as *mut c_void,
+                size,
+                Some(&mut bytes_read),
+            )
         };
         if ret.is_err() || bytes_read < size {
             return None;
@@ -303,9 +307,7 @@ pub(crate) mod win32 {
         ) -> i32; // HRESULT
 
         #[allow(dead_code)]
-        pub fn DeleteAppContainerProfile(
-            app_container_name: *const u16,
-        ) -> i32;
+        pub fn DeleteAppContainerProfile(app_container_name: *const u16) -> i32;
 
         pub fn DeriveAppContainerSidFromAppContainerName(
             app_container_name: *const u16,
@@ -369,13 +371,10 @@ pub(crate) mod win32 {
     /// Detecta si el sistema soporta AppContainer (Windows 8+).
     pub fn appcontainer_supported() -> bool {
         // Try to derive a well-known non-existent SID to test API availability
-        let test_name: Vec<u16> = "AgentGuard.TestDetection\0"
-            .encode_utf16()
-            .collect();
+        let test_name: Vec<u16> = "AgentGuard.TestDetection\0".encode_utf16().collect();
         let mut sid: *mut c_void = std::ptr::null_mut();
-        let ret = unsafe {
-            DeriveAppContainerSidFromAppContainerName(test_name.as_ptr(), &mut sid)
-        };
+        let ret =
+            unsafe { DeriveAppContainerSidFromAppContainerName(test_name.as_ptr(), &mut sid) };
         if !sid.is_null() {
             unsafe { FreeSid(PSID(sid)) };
         }
