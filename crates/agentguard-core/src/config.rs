@@ -49,7 +49,7 @@ pub enum ConfigError {
 
 /// Top-level config. Coincide con la estructura del `config.toml` descrita
 /// en `README.md` §15.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default)]
     pub agentguard: Meta,
@@ -92,6 +92,112 @@ pub struct Config {
     /// v2.1: Windows-specific configuration.
     #[serde(default)]
     pub windows: WindowsConfig,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            agentguard: Meta::default(),
+            protected_dirs: builtin_protected_dirs(),
+            protected_files: builtin_protected_files(),
+            agent_processes: builtin_agent_patterns(),
+            on_violation: OnViolation::default(),
+            alerts: Alerts::default(),
+            vault: VaultConfig::default(),
+            dlp: DlpConfig::default(),
+            sandbox: SandboxConfig::default(),
+            agent_detection: AgentDetection::default(),
+            updates: Updates::default(),
+            windows: WindowsConfig::default(),
+        }
+    }
+}
+
+/// Directorios protegidos por defecto (sin necesidad de config manual).
+fn builtin_protected_dirs() -> Vec<PathBuf> {
+    vec![
+        PathBuf::from("~/Documents"),
+        PathBuf::from("~/Projects"),
+        PathBuf::from("~/Downloads"),
+        PathBuf::from("~/.ssh"),
+        PathBuf::from("~/.config"),
+        PathBuf::from("~/Desktop"),
+    ]
+}
+
+/// Archivos protegidos por defecto contra escritura.
+fn builtin_protected_files() -> Vec<PathBuf> {
+    vec![
+        PathBuf::from("~/.env"),
+        PathBuf::from("~/.netrc"),
+        PathBuf::from("~/.aws/credentials"),
+        PathBuf::from("~/.gitconfig"),
+        PathBuf::from("~/.npmrc"),
+    ]
+}
+
+/// Patrones de agentes IA predefinidos (sin necesidad de config manual).
+fn builtin_agent_patterns() -> Vec<AgentProcess> {
+    vec![
+        AgentProcess {
+            name: "cursor".into(),
+            r#match: AgentMatch {
+                exe: None,
+                exe_any: vec!["cursor".into(), "Cursor".into()],
+                argv_contains_any: vec![],
+                env_has: None,
+            },
+        },
+        AgentProcess {
+            name: "claude-code".into(),
+            r#match: AgentMatch {
+                exe: None,
+                exe_any: vec!["claude".into(), "claude-code".into()],
+                argv_contains_any: vec![],
+                env_has: None,
+            },
+        },
+        AgentProcess {
+            name: "vscode-copilot".into(),
+            r#match: AgentMatch {
+                exe: None,
+                exe_any: vec!["code".into(), "code-insiders".into(), "codium".into()],
+                argv_contains_any: vec![
+                    "--agent-mode".into(),
+                    "--copilot".into(),
+                    "--assistant".into(),
+                ],
+                env_has: None,
+            },
+        },
+        AgentProcess {
+            name: "windsurf".into(),
+            r#match: AgentMatch {
+                exe: Some("windsurf".into()),
+                exe_any: vec![],
+                argv_contains_any: vec![],
+                env_has: None,
+            },
+        },
+        AgentProcess {
+            name: "aider".into(),
+            r#match: AgentMatch {
+                exe: Some("aider".into()),
+                exe_any: vec!["aider-chat".into()],
+                argv_contains_any: vec![],
+                env_has: None,
+            },
+        },
+        AgentProcess {
+            name: "opencode".into(),
+            r#match: AgentMatch {
+                exe: Some("opencode".into()),
+                exe_any: vec![],
+                argv_contains_any: vec![],
+                env_has: None,
+            },
+        },
+    ]
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]

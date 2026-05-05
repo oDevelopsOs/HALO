@@ -81,7 +81,7 @@ pub fn render(f: &mut Frame, state: &AppState, area: Rect) {
     items.push(ListItem::new(""));
     items.push(
         ListItem::new(
-            "  [Enter] Create snapshot  [r] Restore latest  [Backspace] Cleanup old  q Quit",
+            "  [Enter] Create  [r] Restore  [Backspace] Cleanup  1-5 tabs | h help | q Quit",
         )
         .style(theme::muted_style()),
     );

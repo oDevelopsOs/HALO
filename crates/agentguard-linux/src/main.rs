@@ -235,20 +235,24 @@ async fn main() -> Result<()> {
     });
 
     // ── Agent scanner (/proc) ───────────────────────────────
-    let agent_patterns = config.agent_processes.clone();
-    if !agent_patterns.is_empty() {
-        let scan_tx = event_tx.clone();
-        tokio::spawn(agentguard_linux::guard::agents::scan_loop(
-            agent_patterns,
-            scan_tx,
-        ));
-        info!(
-            count = config.agent_processes.len(),
-            "agent process scanner started"
-        );
+    let agent_patterns = if config.agent_processes.is_empty() {
+        let defaults = Config::default();
+        let count = defaults.agent_processes.len();
+        info!(count, "using builtin agent patterns (no config file)");
+        defaults.agent_processes
     } else {
-        info!("no agent process patterns configured — scanner disabled");
-    }
+        config.agent_processes.clone()
+    };
+    let pattern_count = agent_patterns.len();
+
+    let scan_tx = event_tx.clone();
+    tokio::task::spawn_blocking(move || {
+        agentguard_linux::guard::agents::scan_loop(agent_patterns, scan_tx);
+    });
+    info!(
+        count = pattern_count,
+        "agent process scanner started"
+    );
 
     // ── v2.1: Process watcher (eBPF tracepoint) ─────────────
     #[cfg(feature = "ebpf")]

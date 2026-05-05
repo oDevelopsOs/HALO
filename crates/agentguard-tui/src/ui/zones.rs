@@ -48,7 +48,7 @@ pub fn render(f: &mut Frame, state: &AppState, area: Rect) {
 
     items.push(ListItem::new(""));
     items.push(
-        ListItem::new("  [Enter] Add path  [Delete] Remove  1-4 Switch tab  q Quit")
+        ListItem::new("  [Enter] Add path  [Delete] Remove  1-5 tabs | h help | q Quit")
             .style(theme::muted_style()),
     );
 

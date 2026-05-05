@@ -101,8 +101,11 @@ impl AgentScanner {
                 "AI agent process detected"
             );
 
-            let _ = tx.blocking_send(SecurityEvent::SystemError {
-                message: format!("AI agent detected: {exe_name} (pid {pid})"),
+            let _ = tx.blocking_send(SecurityEvent::AgentDetected {
+                pid,
+                agent_name: exe_name.to_string(),
+                cwd: std::path::PathBuf::from("/proc"),
+                mode: "monitor".into(),
                 timestamp: unix_ts(),
             });
         }
@@ -120,8 +123,8 @@ impl AgentScanner {
 }
 
 /// Escanea procesos en bucle periódico. Diseñado para ejecutarse como
-/// tarea tokio dedicada.
-pub async fn scan_loop(patterns: Vec<AgentProcess>, tx: mpsc::Sender<SecurityEvent>) {
+/// tarea de bloqueo dedicada (spawn_blocking).
+pub fn scan_loop(patterns: Vec<AgentProcess>, tx: mpsc::Sender<SecurityEvent>) {
     let mut scanner = AgentScanner::new(patterns);
     info!(
         "agent process scanner started (/proc scan, {}s interval)",
@@ -130,7 +133,7 @@ pub async fn scan_loop(patterns: Vec<AgentProcess>, tx: mpsc::Sender<SecurityEve
 
     loop {
         scanner.scan(&tx);
-        tokio::time::sleep(std::time::Duration::from_millis(SCAN_INTERVAL_MS)).await;
+        std::thread::sleep(std::time::Duration::from_millis(SCAN_INTERVAL_MS));
     }
 }
 

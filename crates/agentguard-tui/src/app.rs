@@ -11,11 +11,12 @@ pub enum Tab {
     Zones,
     Incidents,
     Snapshots,
+    Help,
 }
 
 impl Tab {
-    pub fn all() -> [Tab; 4] {
-        [Tab::Dashboard, Tab::Zones, Tab::Incidents, Tab::Snapshots]
+    pub fn all() -> [Tab; 5] {
+        [Tab::Dashboard, Tab::Zones, Tab::Incidents, Tab::Snapshots, Tab::Help]
     }
 
     pub fn title(&self) -> &'static str {
@@ -24,6 +25,7 @@ impl Tab {
             Tab::Zones => "Protected Zones",
             Tab::Incidents => "Recent Incidents",
             Tab::Snapshots => "Snapshots",
+            Tab::Help => "? Help",
         }
     }
 }
@@ -139,8 +141,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tab_all_returns_four_tabs() {
-        assert_eq!(Tab::all().len(), 4);
+    fn tab_all_returns_five_tabs() {
+        assert_eq!(Tab::all().len(), 5);
     }
 
     #[test]

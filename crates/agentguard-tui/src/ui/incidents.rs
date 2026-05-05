@@ -24,9 +24,12 @@ pub fn render(f: &mut Frame, state: &AppState, area: Rect) {
             .iter()
             .all(|s| s == "No incidents recorded yet.")
     {
-        "No security incidents detected. Your data is safe.\n\nViolations appear here in real-time when an AI agent\nattempts to access or exfiltrate protected data.".to_string()
+        "No security incidents detected. Your data is safe.\n\nViolations appear here in real-time when an AI agent\nattempts to access or exfiltrate protected data.\n\n1-5 tabs | r refresh | h help | q quit".to_string()
     } else {
-        state.incidents.join("\n")
+        let mut lines: Vec<String> = state.incidents.to_vec();
+        lines.push(String::new());
+        lines.push("1-5 tabs | r refresh | h help | q quit".into());
+        lines.join("\n")
     };
 
     let para = Paragraph::new(content)

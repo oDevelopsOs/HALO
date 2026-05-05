@@ -99,6 +99,7 @@ fn run_loop<B: Backend>(
                         KeyCode::Char('2') => state.current_tab = Tab::Zones,
                         KeyCode::Char('3') => state.current_tab = Tab::Incidents,
                         KeyCode::Char('4') => state.current_tab = Tab::Snapshots,
+                        KeyCode::Char('5') | KeyCode::Char('h') => state.current_tab = Tab::Help,
                         KeyCode::Char('r') => {
                             state.refresh(client);
                             state.set_status("Data refreshed".into());

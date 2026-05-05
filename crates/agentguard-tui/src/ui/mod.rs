@@ -1,6 +1,7 @@
 //! Módulo UI — renderizado por pestaña.
 
 mod dashboard;
+mod help;
 mod incidents;
 mod snapshots;
 mod zones;
@@ -17,6 +18,7 @@ pub fn render_tab(f: &mut Frame, state: &AppState, area: Rect) {
         Tab::Zones => zones::render(f, state, area),
         Tab::Incidents => incidents::render(f, state, area),
         Tab::Snapshots => snapshots::render(f, state, area),
+        Tab::Help => help::render(f, area),
     }
 }
 
@@ -53,7 +55,7 @@ pub fn render_status_bar(f: &mut Frame, state: &AppState, area: Rect) {
     let left = if state.daemon.connected {
         let paused = if state.daemon.paused { " [PAUSED]" } else { "" };
         format!(
-            " AG v{} | {} ({}){paused} | q quit",
+            " AG v{} | {} ({}){paused} | h help | q quit",
             state.daemon.version, state.daemon.guard_backend, state.daemon.protection_level,
         )
     } else {
