@@ -36,7 +36,7 @@ mod transport {
         fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
             let mut bytes_read = 0u32;
             let ret = unsafe {
-                kernel32_ReadFile(
+                ReadFile(
                     self.handle,
                     buf.as_mut_ptr(),
                     buf.len() as u32,
@@ -61,7 +61,7 @@ mod transport {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
             let mut bytes_written = 0u32;
             let ret = unsafe {
-                kernel32_WriteFile(
+                WriteFile(
                     self.handle,
                     buf.as_ptr(),
                     buf.len() as u32,
@@ -83,7 +83,7 @@ mod transport {
     impl Drop for NamedPipeStream {
         fn drop(&mut self) {
             unsafe {
-                kernel32_CloseHandle(self.handle);
+                CloseHandle(self.handle);
             }
         }
     }
@@ -102,7 +102,7 @@ mod transport {
             .collect();
 
         let handle = unsafe {
-            kernel32_CreateFileW(
+            CreateFileW(
                 wide.as_ptr(),
                 GENERIC_READ | GENERIC_WRITE,
                 0,
@@ -123,7 +123,7 @@ mod transport {
     // FFI bindings to kernel32.dll
     #[link(name = "kernel32")]
     extern "system" {
-        fn kernel32_CreateFileW(
+        fn CreateFileW(
             lpFileName: *const u16,
             dwDesiredAccess: u32,
             dwShareMode: u32,
@@ -133,7 +133,7 @@ mod transport {
             hTemplateFile: *mut u8,
         ) -> isize;
 
-        fn kernel32_ReadFile(
+        fn ReadFile(
             hFile: isize,
             lpBuffer: *mut u8,
             nNumberOfBytesToRead: u32,
@@ -141,7 +141,7 @@ mod transport {
             lpOverlapped: *mut u8,
         ) -> i32;
 
-        fn kernel32_WriteFile(
+        fn WriteFile(
             hFile: isize,
             lpBuffer: *const u8,
             nNumberOfBytesToWrite: u32,
@@ -149,13 +149,14 @@ mod transport {
             lpOverlapped: *mut u8,
         ) -> i32;
 
-        fn kernel32_CloseHandle(
+        fn CloseHandle(
             hObject: isize,
         ) -> i32;
     }
 }
 
 #[cfg(not(any(unix, windows)))]
+
 mod transport {
     use std::io;
     use std::io::{Read, Write};
@@ -194,7 +195,9 @@ mod transport {
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
-use agentguard_common::{IpcCommand, IpcResponse, IPC_PROTOCOL_VERSION, IPC_SOCKET_PATH};
+use agentguard_common::{IpcCommand, IpcResponse, IPC_PROTOCOL_VERSION};
+#[cfg(not(windows))]
+use agentguard_common::IPC_SOCKET_PATH;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use transport::connect;

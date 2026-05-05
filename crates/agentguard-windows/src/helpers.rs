@@ -6,7 +6,7 @@
 #[cfg(target_os = "windows")]
 pub(crate) mod win32 {
     use std::ffi::c_void;
-    use windows::Win32::Foundation::{CloseHandle, GetLastError, HANDLE};
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::Win32::System::Diagnostics::Debug::ReadProcessMemory;
     use windows::Win32::System::Threading::{
         OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ,
@@ -124,7 +124,8 @@ pub(crate) mod win32 {
         }
 
         // 3. Read command_line UnicodeString from remote process parameters
-        let cmdline_field_addr = unsafe { params_addr.byte_add(CMDLINE_OFFSET) };
+        let cmdline_field_addr =
+            unsafe { (params_addr as *const u8).add(CMDLINE_OFFSET) as *const c_void };
         let cmdline_ustr = read_process_memory_typed::<UnicodeString>(process, cmdline_field_addr)?;
 
         // 4. Read the actual command line buffer (UTF-16)
@@ -179,7 +180,8 @@ pub(crate) mod win32 {
         }
 
         // Read _current_directory offset (24 bytes, UTF-16 buffer embedded)
-        let cwd_field_addr = unsafe { params_addr.byte_add(CWD_OFFSET) };
+        let cwd_field_addr =
+            unsafe { (params_addr as *const u8).add(CWD_OFFSET) as *const c_void };
         let cwd_bytes = match read_process_memory_slice(process, cwd_field_addr, 24) {
             Some(b) => b,
             None => return String::new(),
@@ -292,7 +294,7 @@ pub(crate) mod win32 {
         ) -> i32;
     }
 
-    use windows::Win32::Foundation::FreeSid;
+    use windows::Win32::Security::FreeSid;
 
     /// Crea o recupera un AppContainer profile.
     /// Retorna el SID y un flag indicando si ya existía.

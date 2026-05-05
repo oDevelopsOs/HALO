@@ -15,19 +15,17 @@ mod windows_impl {
     #![allow(dead_code)]
     use agentguard_core::config::Config;
     use std::collections::hash_map::DefaultHasher;
-    use std::ffi::OsStr;
     use std::hash::{Hash, Hasher};
     use std::os::windows::ffi::OsStrExt;
     use std::path::Path;
 
-    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{
         CreateProcessW, DeleteProcThreadAttributeList, InitializeProcThreadAttributeList,
-        UpdateProcThreadAttribute, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
-        STARTUPINFOEXW,
+        UpdateProcThreadAttribute, EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST,
+        PROCESS_INFORMATION, STARTUPINFOEXW,
     };
     use windows::core::PCWSTR;
-    use windows::Win32::Storage::FileSystem::GetFullPathNameW;
 
     use crate::helpers::win32::{
         self, free_app_container_sid, SecurityCapabilities,
@@ -67,7 +65,7 @@ mod windows_impl {
 
             // 3. Build SecurityCapabilities for the new process
             let mut sec_caps = SecurityCapabilities {
-                app_container_sid,
+                appcontainer_sid,
                 capabilities: std::ptr::null_mut(),
                 capability_count: 0,
                 reserved: 0,
@@ -99,7 +97,7 @@ mod windows_impl {
             // First call: get required size
             unsafe {
                 InitializeProcThreadAttributeList(
-                    None,
+                    LPPROC_THREAD_ATTRIBUTE_LIST(std::ptr::null_mut()),
                     ATTR_COUNT,
                     0,
                     &mut attr_list_size,
@@ -107,11 +105,12 @@ mod windows_impl {
             }
 
             let mut attr_buf: Vec<u8> = vec![0u8; attr_list_size];
-            let attr_list = attr_buf.as_mut_ptr() as *mut std::ffi::c_void;
+            let attr_list_ptr = attr_buf.as_mut_ptr() as *mut std::ffi::c_void;
+            let attr_list = LPPROC_THREAD_ATTRIBUTE_LIST(attr_list_ptr);
 
             unsafe {
                 InitializeProcThreadAttributeList(
-                    Some(attr_list),
+                    attr_list,
                     ATTR_COUNT,
                     0,
                     &mut attr_list_size,
@@ -121,10 +120,10 @@ mod windows_impl {
                     attr_list,
                     0,
                     PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
-                    &sec_caps as *const _ as *const std::ffi::c_void,
+                    Some(&sec_caps as *const _ as *const std::ffi::c_void),
                     std::mem::size_of::<SecurityCapabilities>(),
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
+                    None,
+                    None,
                 )?;
             }
 
@@ -159,7 +158,7 @@ mod windows_impl {
             let create_result = unsafe {
                 CreateProcessW(
                     PCWSTR(agent_wide.as_ptr()),
-                    None,
+                    windows::core::PWSTR(std::ptr::null_mut()),
                     None,
                     None,
                     false,
@@ -172,9 +171,7 @@ mod windows_impl {
             };
 
             // Always clean up attribute list and capabilities
-            if !attr_list.is_null() {
-                unsafe { DeleteProcThreadAttributeList(attr_list) };
-            }
+            unsafe { DeleteProcThreadAttributeList(attr_list) };
             free_app_container_sid(appcontainer_sid);
 
             create_result?;
