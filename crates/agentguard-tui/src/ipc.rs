@@ -130,10 +130,7 @@ mod tests {
     #[test]
     fn client_has_socket_path() {
         let client = IpcClient::new(PathBuf::from("/tmp/test.sock"));
-        assert_eq!(
-            client.socket_path,
-            PathBuf::from("/tmp/test.sock")
-        );
+        assert_eq!(client.socket_path, PathBuf::from("/tmp/test.sock"));
     }
 
     #[test]

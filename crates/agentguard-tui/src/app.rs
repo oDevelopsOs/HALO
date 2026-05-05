@@ -149,11 +149,7 @@ mod tests {
         let mut deduped: Vec<&str> = titles.clone();
         deduped.sort();
         deduped.dedup();
-        assert_eq!(
-            titles.len(),
-            deduped.len(),
-            "all tab titles must be unique"
-        );
+        assert_eq!(titles.len(), deduped.len(), "all tab titles must be unique");
     }
 
     #[test]
@@ -207,4 +203,3 @@ mod tests {
         assert_eq!(state.status_message, None);
     }
 }
-

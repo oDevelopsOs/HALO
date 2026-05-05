@@ -304,17 +304,16 @@ mod win32 {
 
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{
-        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, HANDLE, HLOCAL, LocalFree, WIN32_ERROR,
+        CloseHandle, GetLastError, LocalFree, ERROR_ACCESS_DENIED, HANDLE, HLOCAL, WIN32_ERROR,
     };
     use windows::Win32::Security::Authorization::{
         GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, DENY_ACCESS,
         EXPLICIT_ACCESS_W, MULTIPLE_TRUSTEE_OPERATION, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_W,
     };
     use windows::Win32::Security::{
-        GetTokenInformation, TokenUser, ACL, DACL_SECURITY_INFORMATION, GetAclInformation,
-        AclSizeInformation,
-        PROTECTED_DACL_SECURITY_INFORMATION, SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_QUERY,
-        TOKEN_USER,
+        AclSizeInformation, GetAclInformation, GetTokenInformation, TokenUser, ACL,
+        DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+        SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_QUERY, TOKEN_USER,
     };
     use windows::Win32::Storage::FileSystem::{
         DELETE, FILE_ACCESS_RIGHTS, FILE_DELETE_CHILD, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA,
@@ -538,7 +537,9 @@ mod win32 {
             );
 
             if result.is_err() {
-                return Err(GuardError::Internal("verify: GetNamedSecurityInfoW failed".into()));
+                return Err(GuardError::Internal(
+                    "verify: GetNamedSecurityInfoW failed".into(),
+                ));
             }
 
             let mut ace_count: u32 = 0;
@@ -670,8 +671,8 @@ mod win32 {
     /// Returns true if successfully enabled, false otherwise.
     fn enable_security_privilege() -> bool {
         use windows::Win32::Security::{
-            AdjustTokenPrivileges, LookupPrivilegeValueW, SE_PRIVILEGE_ENABLED,
-            TOKEN_ADJUST_PRIVILEGES, TOKEN_QUERY, TOKEN_PRIVILEGES, LUID_AND_ATTRIBUTES,
+            AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES,
+            SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
         };
 
         unsafe {
@@ -757,13 +758,11 @@ mod win32 {
 
     /// Tries to find the interactive user's SID by looking at explorer.exe's token.
     fn find_interactive_user_sid() -> Option<Vec<u16>> {
-        use windows::Win32::System::Threading::{
-            OpenProcess, PROCESS_QUERY_INFORMATION,
-        };
         use windows::Win32::System::Diagnostics::ToolHelp::{
             CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
             TH32CS_SNAPPROCESS,
         };
+        use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION};
 
         unsafe {
             let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()?;
@@ -773,15 +772,17 @@ mod win32 {
             if Process32FirstW(snapshot, &mut pe).is_ok() {
                 loop {
                     let exe_name = String::from_utf16_lossy(
-                        &pe.szExeFile[..pe.szExeFile.iter().position(|&c| c == 0).unwrap_or(pe.szExeFile.len())],
+                        &pe.szExeFile[..pe
+                            .szExeFile
+                            .iter()
+                            .position(|&c| c == 0)
+                            .unwrap_or(pe.szExeFile.len())],
                     );
                     if exe_name.eq_ignore_ascii_case("explorer.exe") {
                         // Found explorer.exe — get its token SID
-                        if let Ok(proc) = OpenProcess(
-                            PROCESS_QUERY_INFORMATION,
-                            false,
-                            pe.th32ProcessID,
-                        ) {
+                        if let Ok(proc) =
+                            OpenProcess(PROCESS_QUERY_INFORMATION, false, pe.th32ProcessID)
+                        {
                             let mut token: HANDLE = HANDLE::default();
                             if OpenProcessToken(proc, TOKEN_QUERY, &mut token).is_ok() {
                                 let sid = read_token_user_sid(token);
@@ -809,8 +810,8 @@ mod win32 {
     fn read_token_user_sid(token: HANDLE) -> Option<Vec<u16>> {
         unsafe {
             use windows::Win32::Security::GetTokenInformation;
-            use windows::Win32::Security::TOKEN_USER;
             use windows::Win32::Security::TokenUser;
+            use windows::Win32::Security::TOKEN_USER;
 
             let mut size: u32 = 0;
             let _ = GetTokenInformation(token, TokenUser, None, 0, &mut size);
@@ -846,7 +847,9 @@ mod win32 {
             struct TokenGuard(HANDLE);
             impl Drop for TokenGuard {
                 fn drop(&mut self) {
-                    unsafe { let _ = CloseHandle(self.0); }
+                    unsafe {
+                        let _ = CloseHandle(self.0);
+                    }
                 }
             }
             let _guard = TokenGuard(token);

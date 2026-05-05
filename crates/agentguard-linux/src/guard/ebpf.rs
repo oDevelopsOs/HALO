@@ -106,11 +106,12 @@ impl EbpfGuard {
             .as_mut()
             .ok_or_else(|| GuardError::Unavailable("net_guard not loaded".into()))?;
 
-        let mut mode: Array<_, u8> =
-            Array::try_from(bpf_net.map_mut("NET_RESTRICT_MODE").ok_or_else(|| {
-                GuardError::Internal("NET_RESTRICT_MODE map not found".into())
-            })?)
-            .map_err(|e| GuardError::Internal(format!("NET_RESTRICT_MODE: {e}")))?;
+        let mut mode: Array<_, u8> = Array::try_from(
+            bpf_net
+                .map_mut("NET_RESTRICT_MODE")
+                .ok_or_else(|| GuardError::Internal("NET_RESTRICT_MODE map not found".into()))?,
+        )
+        .map_err(|e| GuardError::Internal(format!("NET_RESTRICT_MODE: {e}")))?;
 
         let val: u8 = if restricted { 1 } else { 0 };
         mode.set(0, val, 0)

@@ -22,9 +22,6 @@ pub async fn select_guard(
         match ebpf::EbpfGuard::try_load(protected_paths, protected_files).await {
             Ok(mut guard) => {
                 tracing::info!(backend = "ebpf", "kernel-level protection active");
-                // If DLP proxy is enabled, activate network restriction at kernel level.
-                // This blocks non-localhost outbound connections from ALL processes,
-                // forcing traffic through the DLP proxy on 127.0.0.1.
                 if dlp_enabled {
                     if let Err(e) = guard.set_network_restricted(true) {
                         tracing::warn!(error = %e, "failed to enable network restriction");
@@ -42,6 +39,7 @@ pub async fn select_guard(
     #[cfg(not(feature = "ebpf"))]
     {
         let _ = protected_files;
+        let _ = dlp_enabled;
     }
 
     let guard = userspace::UserspaceGuard::new(protected_paths)?;

@@ -1015,7 +1015,10 @@ mod tests {
         use agentguard_common::{IpcCommand, IpcResponse};
         let cmd = IpcCommand::Ping;
         let json = serde_json::to_string(&cmd).unwrap();
-        assert!(!json.contains('\n'), "IPC command should be single-line JSON");
+        assert!(
+            !json.contains('\n'),
+            "IPC command should be single-line JSON"
+        );
         assert!(json.starts_with('{'), "IPC command should be JSON object");
         let pong = IpcResponse::Pong;
         let pong_json = serde_json::to_string(&pong).unwrap();
