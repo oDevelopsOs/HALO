@@ -65,7 +65,7 @@ mod windows_impl {
 
             // 3. Build SecurityCapabilities for the new process
             let mut sec_caps = SecurityCapabilities {
-                app_container_sid,
+                app_container_sid: appcontainer_sid,
                 capabilities: std::ptr::null_mut(),
                 capability_count: 0,
                 reserved: 0,

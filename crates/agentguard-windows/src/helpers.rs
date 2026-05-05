@@ -358,7 +358,7 @@ pub(crate) mod win32 {
             DeriveAppContainerSidFromAppContainerName(test_name.as_ptr(), &mut sid)
         };
         if !sid.is_null() {
-            unsafe { FreeSid(sid) };
+            unsafe { FreeSid(PSID(sid)) };
         }
         ret >= 0
     }
