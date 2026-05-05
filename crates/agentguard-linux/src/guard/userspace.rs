@@ -145,6 +145,7 @@ fn current_timestamp() -> u64 {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+    #[cfg(not(windows))]
     use tokio::time::{timeout, Duration};
 
     #[cfg(not(windows))]

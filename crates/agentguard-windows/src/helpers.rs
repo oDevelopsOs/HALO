@@ -284,6 +284,7 @@ pub(crate) mod win32 {
             app_container_sid: *mut *mut c_void,
         ) -> i32; // HRESULT
 
+        #[allow(dead_code)]
         pub fn DeleteAppContainerProfile(
             app_container_name: *const u16,
         ) -> i32;

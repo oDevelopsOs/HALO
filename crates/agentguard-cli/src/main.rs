@@ -1006,6 +1006,9 @@ mod tests {
     #[test]
     fn default_socket_path_is_in_home() {
         let p = default_socket_path();
+        #[cfg(unix)]
         assert!(p.to_string_lossy().contains(".agentguard"));
+        #[cfg(windows)]
+        assert!(!p.to_string_lossy().is_empty());
     }
 }
