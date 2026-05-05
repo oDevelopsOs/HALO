@@ -181,15 +181,30 @@ pub(crate) mod win32 {
             return String::new();
         }
 
-        // Read _current_directory offset (24 bytes, UTF-16 buffer embedded)
+        // Read _current_directory (CURDIR.DosPath UnicodeString, not raw bytes)
         let cwd_field_addr =
             unsafe { (params_addr as *const u8).add(CWD_OFFSET) as *const c_void };
-        let cwd_bytes = match read_process_memory_slice(process, cwd_field_addr, 24) {
+        let dos_path_ustr =
+            match read_process_memory_typed::<UnicodeString>(process, cwd_field_addr) {
+                Some(u) => u,
+                None => return String::new(),
+            };
+
+        if dos_path_ustr.buffer.is_null() || dos_path_ustr.length == 0 {
+            return String::new();
+        }
+
+        let buf_bytes = dos_path_ustr.length as usize;
+        let buf = match read_process_memory_slice(
+            process,
+            dos_path_ustr.buffer as *const c_void,
+            buf_bytes,
+        ) {
             Some(b) => b,
             None => return String::new(),
         };
 
-        let wchars: Vec<u16> = cwd_bytes
+        let wchars: Vec<u16> = buf
             .chunks_exact(2)
             .map(|c| u16::from_le_bytes([c[0], c[1]]))
             .take_while(|&c| c != 0)
