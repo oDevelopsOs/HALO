@@ -24,6 +24,10 @@ pub enum LandlockError {
     RuleAdd { path: String, err: String },
     #[error("Failed to restrict thread: {0}")]
     Restrict(String),
+    #[error("Landlock partially enforced (older kernel, some access not restricted)")]
+    PartiallyEnforced,
+    #[error("Landlock not enforced (kernel does not support this ABI)")]
+    NotEnforced,
 }
 
 /// Aplica un perfil Landlock al proceso actual:
@@ -59,14 +63,15 @@ pub fn apply_landlock_profile(rw_paths: &[&Path], ro_paths: &[&Path]) -> Result<
     match status.ruleset {
         RulesetStatus::FullyEnforced => {
             tracing::info!("Landlock: fully enforced");
+            Ok(())
         }
         RulesetStatus::PartiallyEnforced => {
             tracing::warn!("Landlock: partially enforced (older kernel)");
+            Err(LandlockError::PartiallyEnforced)
         }
         RulesetStatus::NotEnforced => {
             tracing::warn!("Landlock: not enforced (not supported)");
+            Err(LandlockError::NotEnforced)
         }
     }
-
-    Ok(())
 }

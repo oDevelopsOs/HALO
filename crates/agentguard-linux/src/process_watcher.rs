@@ -105,14 +105,12 @@ impl ProcessWatcher {
 
                 let pid = event.pid;
                 let comm = event.comm_str().to_owned();
-                let exe = read_proc_exe(pid).unwrap_or_else(|| comm.clone());
-                let cwd = read_proc_cwd(pid);
 
                 let config_clone = config.clone();
                 let tx = event_tx.clone();
 
                 tokio::spawn(async move {
-                    handle_agent_spawn(pid, comm, exe, cwd, config_clone, tx).await;
+                    handle_agent_spawn(pid, comm, config_clone, tx).await;
                 });
             }
 
@@ -126,11 +124,32 @@ impl ProcessWatcher {
 async fn handle_agent_spawn(
     pid: u32,
     comm: String,
-    exe: String,
-    cwd: Option<PathBuf>,
     config: Arc<RwLock<Config>>,
     event_tx: mpsc::Sender<SecurityEvent>,
 ) {
+    // ── PID reuse guard: verify comm before acting ──
+    // By the time this async handler runs, the kernel may have recycled
+    // the PID to a completely unrelated process. We must verify identity
+    // before reading /proc or sending any signal.
+    if !verify_pid_comm(pid, &comm) {
+        debug!(
+            pid,
+            expected = %comm,
+            "PID reused or process exited — discarding event"
+        );
+        return;
+    }
+
+    // Read /proc only AFTER comm verification
+    let exe = read_proc_exe(pid).unwrap_or_else(|| comm.clone());
+    let cwd = read_proc_cwd(pid);
+
+    // Second verification: PID may have been reused during the /proc reads
+    if !verify_pid_comm(pid, &comm) {
+        debug!(pid, expected = %comm, "PID reused during proc read — discarding");
+        return;
+    }
+
     let cfg = config.read().await;
 
     let cwd = match cwd {
@@ -220,6 +239,14 @@ async fn handle_agent_spawn(
 }
 
 // ── Lectura de /proc ──────────────────────────────────────────────────────────
+
+fn verify_pid_comm(pid: u32, expected: &str) -> bool {
+    let comm = match std::fs::read_to_string(format!("/proc/{pid}/comm")) {
+        Ok(c) => c.trim().to_string(),
+        Err(_) => return false, // process exited → PID is free or reused
+    };
+    comm == expected
+}
 
 fn read_proc_cwd(pid: u32) -> Option<PathBuf> {
     std::fs::read_link(format!("/proc/{pid}/cwd")).ok()

@@ -589,6 +589,15 @@ mod win32 {
             OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token)
                 .map_err(|e| format!("OpenProcessToken: {e}"))?;
 
+            // Guard: ensure token handle is closed on all exit paths
+            struct TokenGuard(HANDLE);
+            impl Drop for TokenGuard {
+                fn drop(&mut self) {
+                    unsafe { let _ = CloseHandle(self.0); }
+                }
+            }
+            let _guard = TokenGuard(token);
+
             let mut size: u32 = 0;
             let _ = GetTokenInformation(token, TokenUser, None, 0, &mut size);
             let mut buf: Vec<u8> = vec![0u8; size as usize];
@@ -600,8 +609,6 @@ mod win32 {
                 &mut size,
             )
             .map_err(|e| format!("GetTokenInformation: {e}"))?;
-
-            let _ = CloseHandle(token);
 
             let token_user = &*(buf.as_ptr() as *const TOKEN_USER);
             let sid = token_user.User.Sid;
