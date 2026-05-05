@@ -253,9 +253,11 @@ async fn main() -> Result<()> {
             let watcher_tx = event_tx.clone();
             let watcher_cfg = Arc::new(tokio::sync::RwLock::new(watcher_config));
             tokio::spawn(async move {
-                match agentguard_linux::process_watcher::ProcessWatcher::load(
-                    &watcher_cfg.read().await,
-                ) {
+                let result = {
+                    let cfg_guard = watcher_cfg.read().await;
+                    agentguard_linux::process_watcher::ProcessWatcher::load(&cfg_guard)
+                };
+                match result {
                     Ok(watcher) => watcher.run(watcher_cfg, watcher_tx).await,
                     Err(e) => {
                         warn!(

@@ -16,6 +16,8 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 
+use include_bytes_aligned::include_bytes_aligned;
+
 use agentguard_common::AgentSpawnEvent;
 use agentguard_core::config::{Config, KnownAgent};
 use agentguard_core::SecurityEvent;
@@ -24,7 +26,7 @@ use crate::sandbox::SandboxLauncher;
 
 // El bytecode eBPF embebido en compile-time
 static PROCESS_EXEC_BPF: &[u8] =
-    include_bytes_aligned::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/process_exec.bpf.o"));
+    include_bytes_aligned!(4096, concat!(env!("OUT_DIR"), "/process_exec.bpf.o"));
 
 pub struct ProcessWatcher {
     bpf: aya::Bpf,

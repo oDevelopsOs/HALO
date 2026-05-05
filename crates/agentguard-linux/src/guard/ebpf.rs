@@ -21,6 +21,7 @@ const NET_GUARD_BYTECODE: &[u8] =
 
 pub struct EbpfGuard {
     bpf: Bpf,
+    bpf_net: Option<Bpf>,
     protected_paths: Vec<PathBuf>,
 }
 
@@ -60,11 +61,24 @@ impl EbpfGuard {
         try_attach_lsm(&mut bpf_file, "inode_setattr"); // depende de kernel >= 5.12
         attach_lsm(&mut bpf_file, "file_truncate")?;
 
-        let bpf_net = BpfLoader::new()
+        let mut bpf_net = BpfLoader::new()
             .btf(aya::Btf::from_sys_fs().ok().as_ref())
             .load(NET_GUARD_BYTECODE)
             .map_err(|e| GuardError::Internal(format!("load net_guard BPF: {e}")))?;
-        drop(bpf_net);
+
+        // Attach socket_connect hook
+        match attach_lsm(&mut bpf_net, "socket_connect") {
+            Ok(()) => tracing::info!("net_guard socket_connect attached"),
+            Err(e) => {
+                tracing::warn!(error = %e, "net_guard attach failed, network filtering disabled");
+                drop(bpf_net);
+                return Ok(Self {
+                    bpf: bpf_file,
+                    bpf_net: None,
+                    protected_paths: paths.to_vec(),
+                });
+            }
+        }
 
         // Poblar PROTECTED_PREFIXES
         populate_prefixes_inner(&mut bpf_file, paths)?;
@@ -76,8 +90,38 @@ impl EbpfGuard {
 
         Ok(Self {
             bpf: bpf_file,
+            bpf_net: Some(bpf_net),
             protected_paths: paths.to_vec(),
         })
+    }
+    /// Devuelve Some si el network guard está activo.
+    pub fn network_guard_active(&self) -> bool {
+        self.bpf_net.is_some()
+    }
+
+    /// Activa o desactiva la restricción de red (bloquear conexiones salientes no-localhost).
+    pub fn set_network_restricted(&mut self, restricted: bool) -> Result<(), GuardError> {
+        let bpf_net = self
+            .bpf_net
+            .as_mut()
+            .ok_or_else(|| GuardError::Unavailable("net_guard not loaded".into()))?;
+
+        let mut mode: Array<_, u8> =
+            Array::try_from(bpf_net.map_mut("NET_RESTRICT_MODE").ok_or_else(|| {
+                GuardError::Internal("NET_RESTRICT_MODE map not found".into())
+            })?)
+            .map_err(|e| GuardError::Internal(format!("NET_RESTRICT_MODE: {e}")))?;
+
+        let val: u8 = if restricted { 1 } else { 0 };
+        mode.set(0, val, 0)
+            .map_err(|e| GuardError::Internal(format!("set NET_RESTRICT_MODE: {e}")))?;
+
+        tracing::info!(
+            restricted,
+            "network restriction {}",
+            if restricted { "enabled" } else { "disabled" }
+        );
+        Ok(())
     }
 }
 
