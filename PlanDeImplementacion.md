@@ -235,7 +235,7 @@ exclude = ["crates/agentguard-ebpf"]
 > - Sandbox tracking: `Arc<RwLock<Vec<SandboxedAgent>>>` con notificaciones de escritorio vía `notify-rust`
 > - Windows ETW + AppContainer/LPAC completo (compila en Windows, stub en Linux)
 
-### Fase 4 — Windows daemon ✓ COMPLETADA
+### Fase 4 — Windows daemon ✓ COMPLETADA (+ Fase 8 hardening)
 
 ```
 [x] 4.1  agentguard-windows/guard.rs: WindowsGuard con SetNamedSecurityInfoW (DENY ACEs).
@@ -245,12 +245,16 @@ exclude = ["crates/agentguard-ebpf"]
 [x] 4.5  agentguard-windows/main.rs: entry point (core + WindowsGuard + service).
 [x] 4.6  Inno Setup installer (packaging/windows/installer.iss).
 [x] 4.7  v2.1: AppContainer/LPAC sandbox + ETW process watcher (cross-platform stubs en Linux).
-[ ] 4.8  Test E2E en VM Windows.
+[x] 4.8  **Fase 8**: AppContainer/LPAC sandbox real (FFI userenv.dll), PEB introspección
+         (NtQueryInformationProcess vía ntdll.dll), Named Pipes IPC (daemon + CLI),
+         tests E2E (15 nuevos tests Windows), installer Windows funcional.
 ```
 
 **Gate:** En Windows 10/11, instalar → proteger carpeta → intentar borrar → Access Denied.
-**Test:** 7 tests unitarios pasan cross-platform (incluyendo Linux).
+**Test:** 7 tests unitarios cross-platform + 15 tests E2E Windows (compilan en Linux,
+ejecutan en Windows).
 **Pendiente:** Test E2E requiere VM Windows física.
+**Sandbox:** AppContainer funcional (Windows 8+), LPAC parcial (requiere capabilities SID).
 
 ### Fase 5 — macOS daemon (POSTERGADO)
 

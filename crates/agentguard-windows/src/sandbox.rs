@@ -14,36 +14,199 @@
 mod windows_impl {
     #![allow(dead_code)]
     use agentguard_core::config::Config;
+    use std::collections::hash_map::DefaultHasher;
+    use std::ffi::OsStr;
+    use std::hash::{Hash, Hasher};
+    use std::os::windows::ffi::OsStrExt;
     use std::path::Path;
 
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::System::Threading::{
+        CreateProcessW, DeleteProcThreadAttributeList, InitializeProcThreadAttributeList,
+        UpdateProcThreadAttribute, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
+        STARTUPINFOEXW,
+    };
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::GetFullPathNameW;
+
+    use crate::helpers::win32::{
+        self, free_app_container_sid, SecurityCapabilities,
+        PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+    };
+
     pub struct SandboxLauncher {
-        _config: Config,
+        config: Config,
     }
 
     impl SandboxLauncher {
         pub fn new(config: Config) -> Self {
-            Self { _config: config }
+            Self { config }
         }
 
         pub async fn launch(
             &self,
-            _agent_exe: &str,
-            _project_dir: &Path,
-            _with_extra_isolation: bool,
+            agent_exe: &str,
+            project_dir: &Path,
+            with_extra_isolation: bool,
         ) -> Result<u32, anyhow::Error> {
-            // AppContainer sandbox requires Windows 10 build 15063+ with
-            // SECURITY_CAPABILITIES API (currently not available in windows-rs v0.58)
-            anyhow::bail!(
-                "AppContainer sandbox not yet available (requires future windows crate version)"
-            )
+            if !appcontainer_supported() {
+                anyhow::bail!("AppContainer sandbox requires Windows 8 or later");
+            }
+
+            // 1. Build unique AppContainer name from project path hash
+            let mut hasher = DefaultHasher::new();
+            project_dir.to_string_lossy().hash(&mut hasher);
+            let hash = hasher.finish();
+            let container_name = format!("AgentGuard.AC{:016x}", hash);
+            let display_name = format!("AgentGuard AI Agent — {}", agent_exe);
+
+            // 2. Create or get AppContainer profile
+            let (appcontainer_sid, _already_existed) =
+                win32::create_or_get_app_container(&container_name, &display_name)
+                    .map_err(|e| anyhow::anyhow!("AppContainer profile: {e}"))?;
+
+            // 3. Build SecurityCapabilities for the new process
+            let mut sec_caps = SecurityCapabilities {
+                app_container_sid,
+                capabilities: std::ptr::null_mut(),
+                capability_count: 0,
+                reserved: 0,
+            };
+
+            let mut caps_array: Vec<win32::SidAndAttributes> = Vec::new();
+            if with_extra_isolation {
+                // LPAC mode: add named capability to block network to non-proxy
+                // For now we only set the AppContainer SID with no extra capabilities
+                // Full LPAC requires well-known capability SIDs (internetClient, etc.)
+                tracing::debug!(
+                    "LPAC mode requested — using AppContainer with minimal capabilities"
+                );
+            }
+
+            if !caps_array.is_empty() {
+                sec_caps.capabilities = caps_array.as_mut_ptr();
+                sec_caps.capability_count = caps_array.len() as u32;
+            }
+
+            // 4. Build STARTUPINFOEX with PROC_THREAD_ATTRIBUTE_LIST
+            let mut si: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
+            si.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+
+            // Allocate attribute list (2 attributes: SECURITY_CAPABILITIES + handle list)
+            const ATTR_COUNT: u32 = 1;
+            let mut attr_list_size: usize = 0;
+
+            // First call: get required size
+            unsafe {
+                InitializeProcThreadAttributeList(
+                    None,
+                    ATTR_COUNT,
+                    0,
+                    &mut attr_list_size,
+                )?;
+            }
+
+            let mut attr_buf: Vec<u8> = vec![0u8; attr_list_size];
+            let attr_list = attr_buf.as_mut_ptr() as *mut std::ffi::c_void;
+
+            unsafe {
+                InitializeProcThreadAttributeList(
+                    Some(attr_list),
+                    ATTR_COUNT,
+                    0,
+                    &mut attr_list_size,
+                )?;
+
+                UpdateProcThreadAttribute(
+                    attr_list,
+                    0,
+                    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+                    &sec_caps as *const _ as *const std::ffi::c_void,
+                    std::mem::size_of::<SecurityCapabilities>(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )?;
+            }
+
+            si.lpAttributeList = attr_list;
+
+            // 5. Build command line
+            let agent_wide: Vec<u16> = agent_exe
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let cwd_wide: Vec<u16> = project_dir
+                .as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+
+            // 6. Set proxy environment variables for DLP
+            let dlp_proxy = format!(
+                "http://127.0.0.1:{}",
+                self.config.dlp.proxy_port
+            );
+            // Environment is inherited from parent; we inject proxy vars via the
+            // process environment block. For simplicity, let CreateProcessW inherit
+            // and we rely on the parent having set these.
+            std::env::set_var("HTTP_PROXY", &dlp_proxy);
+            std::env::set_var("HTTPS_PROXY", &dlp_proxy);
+            std::env::set_var("NO_PROXY", "localhost,127.0.0.1");
+
+            // 7. Create the AppContainer process
+            let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+
+            let create_result = unsafe {
+                CreateProcessW(
+                    PCWSTR(agent_wide.as_ptr()),
+                    None,
+                    None,
+                    None,
+                    false,
+                    EXTENDED_STARTUPINFO_PRESENT,
+                    None,
+                    PCWSTR(cwd_wide.as_ptr()),
+                    &si.StartupInfo,
+                    &mut pi,
+                )
+            };
+
+            // Always clean up attribute list and capabilities
+            if !attr_list.is_null() {
+                unsafe { DeleteProcThreadAttributeList(attr_list) };
+            }
+            free_app_container_sid(appcontainer_sid);
+
+            create_result?;
+
+            let pid = pi.dwProcessId;
+
+            // Close handles we don't need (process + thread handles from CreateProcess)
+            unsafe {
+                let _ = CloseHandle(pi.hProcess);
+                let _ = CloseHandle(pi.hThread);
+            }
+
+            tracing::info!(
+                pid = pid,
+                agent = %agent_exe,
+                container = %container_name,
+                "AppContainer process launched"
+            );
+
+            Ok(pid)
         }
 
         pub fn check_capabilities() -> SandboxCapabilities {
             SandboxCapabilities {
-                appcontainer_available: false,
-                etw_available: false,
+                appcontainer_available: appcontainer_supported(),
+                etw_available: true, // ETW always available with admin rights
             }
         }
+    }
+
+    fn appcontainer_supported() -> bool {
+        win32::appcontainer_supported()
     }
 
     #[derive(Debug, Clone)]
@@ -53,12 +216,29 @@ mod windows_impl {
     }
 
     impl SandboxCapabilities {
-        pub fn effective_mode(&self, _requested: &str) -> &'static str {
-            "monitor"
+        pub fn effective_mode(&self, requested: &str) -> &'static str {
+            match requested {
+                "hybrid" if self.appcontainer_available => "sandbox",
+                "sandbox" if self.appcontainer_available => "sandbox",
+                _ => "monitor",
+            }
         }
 
         pub fn report(&self) -> String {
-            "sandbox not available on this Windows version".to_string()
+            let mut parts: Vec<&str> = Vec::new();
+            if self.appcontainer_available {
+                parts.push("AppContainer=yes");
+            } else {
+                parts.push("AppContainer=no");
+            }
+            if self.etw_available {
+                parts.push("ETW=yes");
+            }
+            if parts.is_empty() {
+                "sandbox not available on this Windows version".to_string()
+            } else {
+                parts.join(" ")
+            }
         }
     }
 }

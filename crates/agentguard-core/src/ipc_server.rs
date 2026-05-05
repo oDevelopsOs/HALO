@@ -100,21 +100,15 @@ impl IpcServer {
     }
 
     /// Arranca el listener. Retorna un handle para shutdown.
+    /// En Unix usa Unix domain sockets (con permisos 0600).
+    /// En Windows usa Named Pipes (vía pipe_name).
     pub fn start(self, socket_path: PathBuf) -> Result<IpcShutdown, std::io::Error> {
         if let Some(parent) = socket_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let _ = std::fs::remove_file(&socket_path);
 
-        #[cfg(not(unix))]
-        {
-            tracing::warn!("IPC server not supported on this platform");
-            let (shutdown_tx, _) = oneshot::channel::<()>();
-            return Ok(IpcShutdown {
-                tx: Some(shutdown_tx),
-                socket_path,
-            });
-        }
+        #[cfg(unix)]
+        let _ = std::fs::remove_file(&socket_path);
 
         #[cfg(unix)]
         {
@@ -134,6 +128,9 @@ impl IpcServer {
                 tracing::info!(path = %sp.display(), "IPC server listening");
 
                 for stream in listener.incoming() {
+                    if shutdown_rx.try_recv().is_ok() {
+                        break;
+                    }
                     let mut stream = match stream {
                         Ok(s) => s,
                         Err(e) => {
@@ -141,9 +138,6 @@ impl IpcServer {
                             continue;
                         }
                     };
-                    if shutdown_rx.try_recv().is_ok() {
-                        break;
-                    }
                     self.handle_connection(&mut stream);
                 }
 
@@ -156,6 +150,27 @@ impl IpcServer {
                 socket_path,
             })
         }
+
+        #[cfg(windows)]
+        {
+            self.start_named_pipe_windowed(socket_path)
+        }
+
+        #[cfg(not(any(unix, windows)))]
+        {
+            tracing::warn!("IPC server not supported on this platform");
+            let (shutdown_tx, _) = oneshot::channel::<()>();
+            Ok(IpcShutdown {
+                tx: Some(shutdown_tx),
+                socket_path,
+            })
+        }
+    }
+
+    /// Implementación de Named Pipe en Windows.
+    #[cfg(windows)]
+    fn start_named_pipe_windowed(self, pipe_name: String) -> Result<IpcShutdown, std::io::Error> {
+        start_named_pipe_server(self, pipe_name)
     }
 
     #[allow(dead_code)]
@@ -466,6 +481,153 @@ impl IpcServer {
             }
         }
     }
+}
+
+// ── Windows Named Pipe support ──────────────────────────────────────────
+
+#[cfg(windows)]
+mod named_pipe {
+    use super::*;
+    use std::io::{Read, Write};
+    use windows::Win32::Foundation::{CloseHandle, ERROR_PIPE_CONNECTED, HANDLE};
+    use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
+    use windows::Win32::System::Pipes::{
+        ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe,
+        PIPE_ACCESS_DUPLEX, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE,
+        PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+    };
+
+    /// Wrapper que implementa Read + Write para handles de Named Pipe.
+    pub struct PipeStream {
+        handle: HANDLE,
+    }
+
+    impl PipeStream {
+        pub unsafe fn from_raw_handle(handle: HANDLE) -> Self {
+            Self { handle }
+        }
+    }
+
+    impl Read for PipeStream {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let mut bytes_read = 0u32;
+            unsafe {
+                ReadFile(
+                    self.handle,
+                    Some(buf),
+                    Some(&mut bytes_read),
+                    None,
+                )
+            }
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e:?}")))?;
+            Ok(bytes_read as usize)
+        }
+    }
+
+    impl Write for PipeStream {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let mut bytes_written = 0u32;
+            unsafe {
+                WriteFile(
+                    self.handle,
+                    buf,
+                    Some(&mut bytes_written),
+                    None,
+                )
+            }
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e:?}")))?;
+            Ok(bytes_written as usize)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Drop for PipeStream {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = DisconnectNamedPipe(self.handle);
+                let _ = CloseHandle(self.handle);
+            }
+        }
+    }
+
+    pub fn run_pipe_server(
+        server: IpcServer,
+        pipe_name: String,
+    ) -> Result<IpcShutdown, std::io::Error> {
+        let full_name = format!(r"\\.\pipe\{}", pipe_name);
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let sp = PathBuf::from(pipe_name);
+
+        std::thread::spawn(move || {
+            tracing::info!(pipe = %full_name, "IPC server listening (Named Pipe)");
+
+            loop {
+                if shutdown_rx.try_recv().is_ok() {
+                    break;
+                }
+
+                let name_wide: Vec<u16> = full_name
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .collect();
+
+                let pipe_handle: HANDLE = unsafe {
+                    match CreateNamedPipeW(
+                        windows::core::PCWSTR(name_wide.as_ptr()),
+                        PIPE_ACCESS_DUPLEX,
+                        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                        PIPE_UNLIMITED_INSTANCES,
+                        4096,
+                        4096,
+                        0,
+                        None,
+                    ) {
+                        Ok(h) => h,
+                        Err(e) => {
+                            tracing::error!("CreateNamedPipeW failed: {e:?}");
+                            break;
+                        }
+                    }
+                };
+
+                let connected = unsafe {
+                    let result = ConnectNamedPipe(pipe_handle, None);
+                    result.is_ok() || result.unwrap_err() == ERROR_PIPE_CONNECTED
+                };
+
+                if !connected {
+                    unsafe { let _ = CloseHandle(pipe_handle); }
+                    continue;
+                }
+
+                if shutdown_rx.try_recv().is_ok() {
+                    unsafe { let _ = CloseHandle(pipe_handle); }
+                    break;
+                }
+
+                let mut stream = unsafe { PipeStream::from_raw_handle(pipe_handle) };
+                server.handle_connection(&mut stream);
+            }
+
+            tracing::info!("IPC server stopped");
+        });
+
+        Ok(IpcShutdown {
+            tx: Some(shutdown_tx),
+            socket_path: sp,
+        })
+    }
+}
+
+#[cfg(windows)]
+fn start_named_pipe_server(server: IpcServer, pipe_name: PathBuf) -> Result<IpcShutdown, std::io::Error> {
+    named_pipe::run_pipe_server(
+        server,
+        pipe_name.to_string_lossy().to_string(),
+    )
 }
 
 /// Builder para IpcServer con opciones adicionales.

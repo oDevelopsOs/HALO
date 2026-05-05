@@ -660,12 +660,10 @@ mod win32 {
         Ok(())
     }
 
-    // ── PEB reading (requires unsupported windows-rs APIs) ────
+    // ── PEB reading (vía helpers FFI raw) ──
 
-    pub fn read_process_command_line(_process: HANDLE) -> Option<String> {
-        // NtQueryInformationProcess + PROCESS_BASIC_INFORMATION
-        // not available in windows-rs v0.58
-        None
+    pub fn read_process_command_line(process: HANDLE) -> Option<String> {
+        crate::helpers::win32::read_remote_command_line(process)
     }
 
     fn win32_read_process_mem(

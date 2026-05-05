@@ -16,7 +16,146 @@ mod transport {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+mod transport {
+    use std::ffi::OsStr;
+    use std::io;
+    use std::io::{Read, Write};
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+
+    const GENERIC_READ: u32 = 0x80000000;
+    const GENERIC_WRITE: u32 = 0x40000000;
+    const OPEN_EXISTING: u32 = 3;
+
+    pub struct NamedPipeStream {
+        handle: isize,
+    }
+
+    impl Read for NamedPipeStream {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let mut bytes_read = 0u32;
+            let ret = unsafe {
+                kernel32_ReadFile(
+                    self.handle,
+                    buf.as_mut_ptr(),
+                    buf.len() as u32,
+                    &mut bytes_read,
+                    std::ptr::null_mut(),
+                )
+            };
+            if ret == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if bytes_read == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "pipe disconnected",
+                ));
+            }
+            Ok(bytes_read as usize)
+        }
+    }
+
+    impl Write for NamedPipeStream {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let mut bytes_written = 0u32;
+            let ret = unsafe {
+                kernel32_WriteFile(
+                    self.handle,
+                    buf.as_ptr(),
+                    buf.len() as u32,
+                    &mut bytes_written,
+                    std::ptr::null_mut(),
+                )
+            };
+            if ret == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(bytes_written as usize)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Drop for NamedPipeStream {
+        fn drop(&mut self) {
+            unsafe {
+                kernel32_CloseHandle(self.handle);
+            }
+        }
+    }
+
+    pub fn connect(path: &Path) -> io::Result<NamedPipeStream> {
+        let pipe_name = path.to_str().unwrap_or("agentguard");
+        let full_name = if pipe_name.starts_with(r"\\.\") {
+            pipe_name.to_string()
+        } else {
+            format!(r"\\.\pipe\{}", pipe_name)
+        };
+
+        let wide: Vec<u16> = OsStr::new(&full_name)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        let handle = unsafe {
+            kernel32_CreateFileW(
+                wide.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                0,
+                std::ptr::null_mut(),
+                OPEN_EXISTING,
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+
+        if handle == -1 {
+            return Err(io::Error::last_os_error());
+        }
+
+        Ok(NamedPipeStream { handle })
+    }
+
+    // FFI bindings to kernel32.dll
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn kernel32_CreateFileW(
+            lpFileName: *const u16,
+            dwDesiredAccess: u32,
+            dwShareMode: u32,
+            lpSecurityAttributes: *mut u8,
+            dwCreationDisposition: u32,
+            dwFlagsAndAttributes: u32,
+            hTemplateFile: *mut u8,
+        ) -> isize;
+
+        fn kernel32_ReadFile(
+            hFile: isize,
+            lpBuffer: *mut u8,
+            nNumberOfBytesToRead: u32,
+            lpNumberOfBytesRead: *mut u32,
+            lpOverlapped: *mut u8,
+        ) -> i32;
+
+        fn kernel32_WriteFile(
+            hFile: isize,
+            lpBuffer: *const u8,
+            nNumberOfBytesToWrite: u32,
+            lpNumberOfBytesWritten: *mut u32,
+            lpOverlapped: *mut u8,
+        ) -> i32;
+
+        fn kernel32_CloseHandle(
+            hObject: isize,
+        ) -> i32;
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 mod transport {
     use std::io;
     use std::io::{Read, Write};
@@ -176,9 +315,20 @@ enum SnapshotCmd {
 // ── Helpers ────────────────────────────────────────────────
 
 fn default_socket_path() -> PathBuf {
-    dirs::home_dir()
-        .map(|h| h.join(IPC_SOCKET_PATH))
-        .unwrap_or_else(|| PathBuf::from("agentguard.sock"))
+    #[cfg(unix)]
+    {
+        dirs::home_dir()
+            .map(|h| h.join(IPC_SOCKET_PATH))
+            .unwrap_or_else(|| PathBuf::from("agentguard.sock"))
+    }
+    #[cfg(windows)]
+    {
+        PathBuf::from(agentguard_common::IPC_PIPE_NAME)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        PathBuf::from(IPC_SOCKET_PATH)
+    }
 }
 
 fn build_command(cmd: Command) -> IpcCommand {

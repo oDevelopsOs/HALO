@@ -26,6 +26,7 @@
 //! NTFS DENY ACEs.
 
 mod guard;
+mod helpers;
 mod process_watcher;
 mod sandbox;
 
@@ -575,14 +576,14 @@ async fn run_daemon(args: Args, shutdown: Arc<AtomicBool>) -> Result<()> {
     .build()
     .with_context(|| "failed to create IPC server")?;
     let ipc_pipe_name = default_ipc_pipe_name();
-    let ipc_socket_path = std::env::temp_dir().join(format!("{ipc_pipe_name}.sock"));
+    let ipc_socket_path = std::path::PathBuf::from(&ipc_pipe_name);
     let ipc_handle = match ipc_server.start(ipc_socket_path.clone()) {
         Ok(h) => {
-            info!(pipe = %ipc_pipe_name, path = %ipc_socket_path.display(), "IPC server started");
+            info!(pipe = %ipc_pipe_name, "IPC Named Pipe server started");
             Some(h)
         }
         Err(e) => {
-            error!(error = %e, "IPC server failed to start — continuing without IPC");
+            warn!(error = %e, "IPC server failed to start");
             None
         }
     };

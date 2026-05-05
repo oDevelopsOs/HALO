@@ -174,7 +174,7 @@ cargo test --workspace --exclude agentguard-ebpf
 - Nunca debilitar tests existentes
 - Si un test se ignora (`#[ignore]`), documentar por qué
 
-### 5.3 Tests por crate (estado actual, Mayo 2026)
+### 5.3 Tests por crate (estado actual, Mayo 2026 — post-Fase 8)
 
 | Crate | Tests | Estado |
 |---|---|---|
@@ -183,10 +183,8 @@ cargo test --workspace --exclude agentguard-ebpf
 | `agentguard-linux` | 18 (15 unit + 3 integración) | OK |
 | `agentguard-tui` | 0 | OK |
 | `agentguard-cli` | 11 | OK |
-| `agentguard-windows` | 7 | OK |
-| `agentguard-tui` | 0 | OK |
-| `agentguard-cli` | 11 | OK |
-| **Total** | **102** | **0 fallos** |
+| `agentguard-windows` | 7 unit + 15 E2E (solo Windows) | OK |
+| **Total** | **99 passed + 2 ignored + 15 Windows-only** | **0 fallos** |
 
 ---
 
@@ -233,13 +231,14 @@ cargo build -p agentguard-linux --features ebpf
 | **0** | ✓ Completada | Reorganización de crates (core + linux + stubs) |
 | **1** | ✓ Completada | Core funcional — 60 tests, 0 unwrap en prod, 0 warnings |
 | **2** | ✓ Completada | Linux daemon funcional (eBPF + userspace, systemd, VM tests, SIGTERM, incidentes disk) |
-| **3** | □ Pendiente | CLI cross-platform + installer con detección de SO |
-| **4** | □ Pendiente | Windows daemon (NTFS ACLs + Job Objects) |
+| **3** | ✓ Completada | CLI cross-platform + installer con detección de SO |
+| **4** | ✓ Completada | Windows daemon (NTFS DENY ACEs + Job Objects) |
 | **5** | □ Pendiente | macOS daemon (EndpointSecurity + chflags) |
-| **6** | □ Pendiente | UI Tauri (opcional, terminal-first) |
-| **7** | □ Pendiente | Auto-updater |
+| **6** | ✓ Completada | TUI Terminal (ratatui + crossterm, 4 tabs) |
+| **7** | ✓ Completada | Auto-updater (ureq 3, GitHub Releases, SHA256) |
+| **8** | ✓ Completada | Windows hardening (AppContainer, PEB, Named Pipes, tests E2E) |
 
 ---
 
-> **Última actualización:** 2026-05-04 — Fase 2.5: hardening completo. 12 hooks eBPF, 84 tests, 0 warnings.
+> **Última actualización:** 2026-05-05 — Fase 8: hardening Windows completo. AppContainer, PEB, Named Pipes, 15 tests E2E. 99 tests, 0 warnings.
 > **Backup más reciente:** `backup/pre-fase0`

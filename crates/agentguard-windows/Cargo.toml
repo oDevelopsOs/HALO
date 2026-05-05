@@ -28,7 +28,7 @@ notify = { version = "6", default-features = false }
 dirs = { workspace = true }
 
 # Windows-specific
-windows = { version = "0.58", features = [
+windows = { version = "0.58", default-features = false, features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",
@@ -37,6 +37,7 @@ windows = { version = "0.58", features = [
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_JobObjects",
     "Win32_System_Kernel",
+    "Win32_System_Pipes",
     "Win32_System_Threading",
     "Win32_System_Time",
     "Win32_System_WindowsProgramming",

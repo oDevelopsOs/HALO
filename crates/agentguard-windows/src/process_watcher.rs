@@ -208,10 +208,8 @@ mod windows_impl {
         String::from_utf16_lossy(&wchars)
     }
 
-    fn read_process_cwd(_pid: u32) -> String {
-        // TODO: implementar NtQueryInformationProcess + ReadProcessMemory
-        // para leer RTL_USER_PROCESS_PARAMETERS.CurrentDirectory
-        String::new()
+    fn read_process_cwd(pid: u32) -> String {
+        crate::helpers::win32::read_process_cwd_by_pid(pid)
     }
 
     // ── Polling fallback ──────────────────────────────────────────────────

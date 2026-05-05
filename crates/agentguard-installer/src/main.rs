@@ -228,9 +228,72 @@ fn install_macos(_target: &Target, _version: &str) -> Result<()> {
     Ok(())
 }
 
-fn install_windows(_target: &Target, _version: &str) -> Result<()> {
-    println!("  Windows support — Fase 4");
-    println!("  Download the MSI from: {GH}/{REPO}/releases/latest");
+fn install_windows(target: &Target, version: &str) -> Result<()> {
+    let tag = if version == "latest" {
+        "latest/download"
+    } else {
+        &format!("download/{version}")
+    };
+
+    // 1. Download CLI
+    let cli_name = format!("agentguard-{triple}.exe", triple = target.triple);
+    let cli_url = format!("{GH}/{REPO}/releases/{tag}/{cli_name}");
+    println!("  → agentguard CLI...");
+    let cli = download(&cli_url)
+        .with_context(|| format!("download agentguard CLI for {}", target.triple))?;
+    let install_dir = r"C:\Program Files\AgentGuard";
+    std::fs::create_dir_all(install_dir)
+        .with_context(|| format!("create {install_dir}"))?;
+    let cli_path = format!("{install_dir}\\agentguard.exe");
+    std::fs::write(&cli_path, &cli)
+        .with_context(|| format!("write {cli_path}"))?;
+
+    // 2. Download daemon
+    let daemon_name = format!("agentguard-windows-{triple}.exe", triple = target.triple);
+    let daemon_url = format!("{GH}/{REPO}/releases/{tag}/{daemon_name}");
+    println!("  → agentguard-windows daemon...");
+    let daemon = download(&daemon_url)
+        .with_context(|| format!("download agentguard-windows for {}", target.triple))?;
+    let daemon_path = format!("{install_dir}\\agentguard-windows.exe");
+    std::fs::write(&daemon_path, &daemon)
+        .with_context(|| format!("write {daemon_path}"))?;
+
+    // 3. Config
+    let config_dir = r"C:\ProgramData\AgentGuard";
+    std::fs::create_dir_all(config_dir)
+        .with_context(|| format!("create {config_dir}"))?;
+    let config_path = format!("{config_dir}\\config.toml");
+    if !std::path::Path::new(&config_path).exists() {
+        println!("  → config.toml...");
+        std::fs::write(&config_path, DEFAULT_CONFIG_TOML)?;
+    }
+
+    // 4. Install as Windows Service
+    println!("  → Registering Windows Service...");
+    let sc_status = std::process::Command::new("sc.exe")
+        .args([
+            "create", "AgentGuard",
+            "binPath=", &format!("{daemon_path} --service"),
+            "start=", "auto",
+            "type=", "own",
+            "obj=", "LocalSystem",
+        ])
+        .status();
+    if let Err(e) = sc_status {
+        eprintln!("  ⚠ Failed to register service (may need admin): {e}");
+    }
+
+    let start_status = std::process::Command::new("sc.exe")
+        .args(["start", "AgentGuard"])
+        .status();
+    if let Err(e) = start_status {
+        eprintln!("  ⚠ Failed to start service: {e}");
+    }
+
+    println!();
+    println!("✓ AgentGuard installed on Windows");
+    println!("  agentguard status       # check protection");
+    println!("  agentguard protect C:\\Projects  # protect a folder");
     Ok(())
 }
 
