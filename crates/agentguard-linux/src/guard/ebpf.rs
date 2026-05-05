@@ -60,6 +60,7 @@ impl EbpfGuard {
         attach_lsm(&mut bpf_file, "inode_link")?;
         try_attach_lsm(&mut bpf_file, "inode_setattr"); // depende de kernel >= 5.12
         attach_lsm(&mut bpf_file, "file_truncate")?;
+        try_attach_lsm(&mut bpf_file, "bprm_check_security"); // optional: kernel >= 5.7
 
         let mut bpf_net = BpfLoader::new()
             .btf(aya::Btf::from_sys_fs().ok().as_ref())
@@ -97,6 +98,29 @@ impl EbpfGuard {
     /// Devuelve Some si el network guard está activo.
     pub fn network_guard_active(&self) -> bool {
         self.bpf_net.is_some()
+    }
+
+    /// Popula el mapa KNOWN_AGENTS_BPRM con hashes FNV-1a de los agentes conocidos.
+    /// Esto permite que el hook bprm_check_security bloquee exec() de agentes IA.
+    pub fn populate_bprm_agents(&self, agent_names: &[String]) -> Result<(), GuardError> {
+        use agentguard_linux::process_watcher::fnv1a_hash;
+
+        let mut known_agents: aya::maps::HashMap<_, u64, u8> = aya::maps::HashMap::try_from(
+            self.bpf
+                .map_mut("KNOWN_AGENTS_BPRM")
+                .ok_or_else(|| GuardError::Internal("KNOWN_AGENTS_BPRM map not found".into()))?,
+        )
+        .map_err(|e| GuardError::Internal(format!("KNOWN_AGENTS_BPRM: {e}")))?;
+
+        for name in agent_names {
+            let hash = fnv1a_hash(name);
+            known_agents
+                .insert(hash, 1u8, 0)
+                .map_err(|e| GuardError::Internal(format!("insert bprm agent '{name}': {e}")))?;
+        }
+
+        tracing::info!(count = agent_names.len(), "populated KNOWN_AGENTS_BPRM");
+        Ok(())
     }
 
     /// Activa o desactiva la restricción de red (bloquear conexiones salientes no-localhost).
@@ -164,6 +188,24 @@ impl KernelGuard for EbpfGuard {
         let mut drop_warned = false;
         tracing::info!("eBPF event listener started");
 
+        // Spawn BPRM event reader (bprm_check_security blocks agent exec)
+        if let Ok(mut bprm_ring) = self
+            .bpf
+            .map_mut("BPRM_EVENTS")
+            .and_then(|m| RingBuf::try_from(m).ok())
+        {
+            let bprm_tx = tx.clone();
+            tokio::task::spawn_blocking(move || loop {
+                while let Some(item) = bprm_ring.next() {
+                    if let Some(ev) = parse_bprm_event(&item) {
+                        let _ = bprm_tx.blocking_send(ev);
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            });
+            tracing::info!("BPRM event reader started");
+        }
+
         loop {
             let mut guard = async_fd
                 .readable()
@@ -229,6 +271,39 @@ fn try_attach_lsm(bpf: &mut Bpf, name: &str) {
 }
 
 // ── Events ───────────────────────────────────────────────────────
+
+fn parse_bprm_event(item: &RingBufItem<'_>) -> Option<SecurityEvent> {
+    let expected = core::mem::size_of::<FileEvent>();
+    if item.len() < expected {
+        return None;
+    }
+    let ev: &FileEvent = unsafe { &*(item.as_ptr() as *const FileEvent) };
+
+    // Only process events with NetworkSend marker (bprm events)
+    if ev.event_type != EventType::NetworkSend {
+        return None;
+    }
+
+    let path_bytes = &ev.path[..(ev.path_len as usize).min(MAX_PREFIX_LEN)];
+    let path = String::from_utf8_lossy(path_bytes).to_string();
+    let comm_end = ev
+        .comm
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(agentguard_common::COMM_LEN);
+    let comm = String::from_utf8_lossy(&ev.comm[..comm_end]).to_string();
+
+    Some(SecurityEvent::AgentDetected {
+        pid: ev.pid,
+        agent_name: comm,
+        cwd: std::path::PathBuf::from(path),
+        mode: "sandbox".into(),
+        timestamp: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+    })
+}
 
 fn parse_file_event(item: &RingBufItem<'_>) -> Result<SecurityEvent, GuardError> {
     let expected = core::mem::size_of::<FileEvent>();

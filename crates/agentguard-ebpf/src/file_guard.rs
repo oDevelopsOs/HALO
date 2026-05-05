@@ -12,7 +12,7 @@
 use aya_ebpf::{
     helpers::{bpf_d_path, bpf_get_current_comm, bpf_probe_read_kernel},
     macros::{lsm, map},
-    maps::{Array, RingBuf},
+    maps::{Array, HashMap, RingBuf},
     programs::LsmContext,
     EbpfContext,
 };
@@ -370,6 +370,101 @@ fn send_file_event(
     }
     // Si reserve() devuelve None, el evento se pierde.
     // La detección de overflow se hace en userspace (batch counter).
+}
+
+// ---------------------------------------------------------------------------
+// bprm_check_security — block AI agent exec before it starts
+// ---------------------------------------------------------------------------
+
+/// FNV-1a 64-bit hash for agent executable names (matches userspace logic).
+const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+const FNV_PRIME: u64 = 0x100000001b3;
+
+#[map]
+static KNOWN_AGENTS_BPRM: HashMap<u64, u8> = HashMap::<u64, u8>::with_max_entries(128, 0);
+
+#[map]
+static BPRM_EVENTS: RingBuf = RingBuf::with_byte_size(256 * 1024, 0);
+
+fn fnv1a_hash(data: &[u8]) -> u64 {
+    let mut hash: u64 = FNV_OFFSET;
+    for &byte in data.iter() {
+        if byte == 0 {
+            break;
+        }
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+#[lsm(hook = "bprm_check_security")]
+pub fn bprm_check_security(ctx: LsmContext) -> i32 {
+    // Read the linux_binprm struct (arg 0)
+    let bprm: *const u8 = match unsafe { ctx.arg::<*const u8>(0) } {
+        p if !p.is_null() => p,
+        _ => return 0,
+    };
+
+    // bprm->file is at offset 0x20 (32) on 64-bit kernels
+    let file_ptr: *const *const u8 = unsafe { (bprm.add(32)) as *const *const u8 };
+    let file = match unsafe { bpf_probe_read_kernel(file_ptr) } {
+        Ok(f) if !f.is_null() => f,
+        _ => return 0,
+    };
+
+    // Resolve the file path via bpf_d_path
+    let mut path_buf: [u8; MAX_PREFIX_LEN] = [0u8; MAX_PREFIX_LEN];
+    let path_len = unsafe {
+        bpf_d_path(
+            file as *const _ as *mut _,
+            &mut path_buf as *mut _ as *mut _,
+            MAX_PREFIX_LEN as u32,
+        )
+    };
+
+    if path_len <= 0 {
+        return 0;
+    }
+
+    let path_len = (path_len as usize).min(MAX_PREFIX_LEN);
+
+    // Extract filename (after last '/')
+    let filename_start = path_buf[..path_len]
+        .iter()
+        .rposition(|&b| b == b'/')
+        .map(|p| p + 1)
+        .unwrap_or(0);
+
+    let filename = &path_buf[filename_start..path_len];
+
+    // Compute FNV-1a hash and check against known agents
+    let hash = fnv1a_hash(filename);
+
+    if let Some(val) = unsafe { KNOWN_AGENTS_BPRM.get(&hash) } {
+        if *val == 1 {
+            // Emit event to ring buffer
+            if let Some(mut entry) = BPRM_EVENTS.reserve::<FileEvent>(0) {
+                unsafe {
+                    let event = &mut *entry.as_mut_ptr();
+                    event.pid = ctx.pid();
+                    event.uid = ctx.uid();
+                    event.event_type = EventType::NetworkSend; // marker for bprm
+                    event.path_len = path_len as u32;
+                    let n = path_len.min(MAX_PREFIX_LEN);
+                    event.path[..n].copy_from_slice(&path_buf[..n]);
+                    if let Ok(comm) = bpf_get_current_comm() {
+                        let m = comm.len().min(COMM_LEN);
+                        event.comm[..m].copy_from_slice(&comm[..m]);
+                    }
+                }
+                entry.submit(0);
+            }
+            return -1; // -EPERM: block the exec
+        }
+    }
+
+    0 // allow
 }
 
 #[panic_handler]

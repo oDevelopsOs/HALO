@@ -210,10 +210,23 @@ async fn main() -> Result<()> {
     }
 
     // ── Guard (eBPF o userspace) ────────────────────────────
+    let agent_names: Vec<String> = config
+        .agent_processes
+        .iter()
+        .map(|ap| ap.name.clone())
+        .chain(
+            config
+                .agent_detection
+                .known_agents
+                .iter()
+                .flat_map(|ka| ka.exe.iter().cloned()),
+        )
+        .collect();
     let guard = select_guard(
         &config.protected_dirs,
         &config.protected_files,
         config.dlp.enabled,
+        &agent_names,
     )
     .await?;
     let guard_backend_name = guard.backend_name().to_string();
@@ -246,26 +259,10 @@ async fn main() -> Result<()> {
     let pattern_count = agent_patterns.len();
 
     let scan_tx = event_tx.clone();
-    let scan_dirs = config.protected_dirs.clone();
-    let scan_mode = config.sandbox.modo_por_defecto.clone();
-    let scan_sandbox = if scan_mode != "monitor" {
-        Some(agentguard_linux::sandbox::SandboxLauncher::new(config.clone()))
-    } else {
-        None
-    };
     tokio::task::spawn_blocking(move || {
-        agentguard_linux::guard::agents::scan_loop(
-            agent_patterns,
-            scan_tx,
-            scan_dirs,
-            scan_sandbox,
-            scan_mode,
-        );
+        agentguard_linux::guard::agents::scan_loop(agent_patterns, scan_tx);
     });
-    info!(
-        count = pattern_count,
-        "agent process scanner started"
-    );
+    info!(count = pattern_count, "agent process scanner started");
 
     // ── v2.1: Process watcher (eBPF tracepoint) ─────────────
     #[cfg(feature = "ebpf")]

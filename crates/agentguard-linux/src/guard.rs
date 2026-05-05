@@ -16,6 +16,7 @@ pub async fn select_guard(
     protected_paths: &[PathBuf],
     protected_files: &[PathBuf],
     dlp_enabled: bool,
+    agent_names: &[String],
 ) -> Result<Box<dyn KernelGuard>, GuardError> {
     #[cfg(feature = "ebpf")]
     {
@@ -29,6 +30,14 @@ pub async fn select_guard(
                         tracing::info!("ebpf network restriction enabled (DLP mode)");
                     }
                 }
+                if let Err(e) = guard.populate_bprm_agents(agent_names) {
+                    tracing::warn!(error = %e, "failed to populate bprm agents — exec blocking disabled");
+                } else if !agent_names.is_empty() {
+                    tracing::info!(
+                        count = agent_names.len(),
+                        "bprm_check_security agents populated"
+                    );
+                }
                 return Ok(Box::new(guard));
             }
             Err(e) => {
@@ -40,6 +49,7 @@ pub async fn select_guard(
     {
         let _ = protected_files;
         let _ = dlp_enabled;
+        let _ = agent_names;
     }
 
     let guard = userspace::UserspaceGuard::new(protected_paths)?;

@@ -14,9 +14,10 @@ pub fn render(f: &mut Frame, area: Rect) {
         .border_style(theme::BORDER);
 
     let lines = vec![
-        Line::from(vec![
-            Span::styled("  ── Navigation ──", theme::heading_style()),
-        ]),
+        Line::from(vec![Span::styled(
+            "  ── Navigation ──",
+            theme::heading_style(),
+        )]),
         Line::from(""),
         Line::from(vec![
             Span::styled("  1", theme::title_style()),
@@ -52,9 +53,10 @@ pub fn render(f: &mut Frame, area: Rect) {
             Span::styled("        previous tab", theme::muted_style()),
         ]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("  ── Actions ──", theme::heading_style()),
-        ]),
+        Line::from(vec![Span::styled(
+            "  ── Actions ──",
+            theme::heading_style(),
+        )]),
         Line::from(""),
         Line::from(vec![
             Span::styled("  r", theme::title_style()),
@@ -69,29 +71,28 @@ pub fn render(f: &mut Frame, area: Rect) {
             Span::styled("   Quit", theme::muted_style()),
         ]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("  ── What is AgentGuard? ──", theme::heading_style()),
-        ]),
+        Line::from(vec![Span::styled(
+            "  ── What is AgentGuard? ──",
+            theme::heading_style(),
+        )]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                "  AgentGuard monitors your filesystem in real-time and blocks AI agents",
-                theme::muted_style(),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  from accessing or exfiltrating sensitive data. It acts as a kernel-level",
-                theme::muted_style(),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("  guard between your files and any AI tool running on your system.", theme::muted_style()),
-        ]),
+        Line::from(vec![Span::styled(
+            "  AgentGuard monitors your filesystem in real-time and blocks AI agents",
+            theme::muted_style(),
+        )]),
+        Line::from(vec![Span::styled(
+            "  from accessing or exfiltrating sensitive data. It acts as a kernel-level",
+            theme::muted_style(),
+        )]),
+        Line::from(vec![Span::styled(
+            "  guard between your files and any AI tool running on your system.",
+            theme::muted_style(),
+        )]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("  ── Getting started ──", theme::heading_style()),
-        ]),
+        Line::from(vec![Span::styled(
+            "  ── Getting started ──",
+            theme::heading_style(),
+        )]),
         Line::from(""),
         Line::from(vec![
             Span::styled("  $ agentguard protect ./secrets", theme::muted_style()),
@@ -106,9 +107,10 @@ pub fn render(f: &mut Frame, area: Rect) {
             Span::styled("              · check daemon health", theme::muted_style()),
         ]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("  ── Color guide ──", theme::heading_style()),
-        ]),
+        Line::from(vec![Span::styled(
+            "  ── Color guide ──",
+            theme::heading_style(),
+        )]),
         Line::from(""),
         Line::from(vec![
             Span::styled("  ", theme::muted_style()),
@@ -142,6 +144,8 @@ pub fn render(f: &mut Frame, area: Rect) {
         ]),
     ];
 
-    let para = Paragraph::new(lines).block(block).wrap(Wrap { trim: false });
+    let para = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false });
     f.render_widget(para, area);
 }

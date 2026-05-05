@@ -19,15 +19,11 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::Arc;
 use tokio::sync::mpsc;
-use tokio::sync::RwLock;
-use tracing::{debug, info, warn, error};
+use tracing::{debug, info, warn};
 
-use agentguard_core::config::{AgentProcess, Config};
+use agentguard_core::config::AgentProcess;
 use agentguard_core::SecurityEvent;
-
-use crate::sandbox::SandboxLauncher;
 
 /// Intervalo entre escaneos de procesos (milisegundos).
 const SCAN_INTERVAL_MS: u64 = 5_000;
@@ -62,13 +58,7 @@ impl AgentScanner {
     /// 2. Lee `/proc/<pid>/cwd` para verificar si está en un dir protegido
     /// 3. Si está protegido y el modo es sandbox/hybrid: kill + bwrap
     /// 4. Emite `AgentDetected` o `AgentSandboxed`
-    pub fn scan(
-        &mut self,
-        tx: &mpsc::Sender<SecurityEvent>,
-        protected_dirs: &[PathBuf],
-        sandbox: Option<&SandboxLauncher>,
-        sandbox_mode: Option<&str>,
-    ) {
+    pub fn scan(&mut self, tx: &mpsc::Sender<SecurityEvent>) {
         let current_pid = std::process::id();
 
         let entries = match std::fs::read_dir("/proc") {
@@ -111,67 +101,6 @@ impl AgentScanner {
                 "AI agent process detected"
             );
 
-            // Check CWD and trigger sandbox if agent is in a protected directory
-            let should_sandbox = protected_dirs.iter().any(|dir| {
-                read_proc_cwd_inner(pid)
-                    .map(|cwd| cwd.starts_with(dir))
-                    .unwrap_or(false)
-            });
-
-            if should_sandbox {
-                if let (Some(launcher), Some(mode)) = (sandbox, sandbox_mode) {
-                    if mode != "monitor" {
-                        let agent_exe = read_proc_exe_inner(pid)
-                            .unwrap_or_else(|| exe_name.to_string());
-                        let cwd_path = read_proc_cwd_inner(pid)
-                            .unwrap_or_else(|| std::path::PathBuf::from("/"));
-
-                        info!(
-                            pid,
-                            agent = %exe_name,
-                            cwd = %cwd_path.display(),
-                            mode,
-                            "agent in protected dir — sandboxing"
-                        );
-
-                        // Kill original
-                        unsafe { libc::kill(pid as i32, libc::SIGTERM); }
-                        std::thread::sleep(std::time::Duration::from_millis(200));
-                        unsafe { libc::kill(pid as i32, libc::SIGKILL); }
-
-                        // Launch in sandbox
-                        match launcher.launch_sync(
-                            &agent_exe,
-                            &cwd_path,
-                            mode == "hybrid",
-                        ) {
-                            Ok(sandbox_pid) => {
-                                info!(
-                                    original_pid = pid,
-                                    sandbox_pid,
-                                    agent = %exe_name,
-                                    "agent sandboxed"
-                                );
-                                let _ = tx.blocking_send(SecurityEvent::AgentSandboxed {
-                                    original_pid: pid,
-                                    sandbox_pid,
-                                    agent_name: exe_name.to_string(),
-                                    cwd: cwd_path,
-                                    timestamp: unix_ts(),
-                                });
-                            }
-                            Err(e) => {
-                                error!(
-                                    agent = %exe_name,
-                                    error = %e,
-                                    "failed to sandbox agent"
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-
             let _ = tx.blocking_send(SecurityEvent::AgentDetected {
                 pid,
                 agent_name: exe_name.to_string(),
@@ -193,37 +122,17 @@ impl AgentScanner {
     }
 }
 
-// ── Helper: CWD read (blocking) ──────────────────────────────────────
-
-fn read_proc_cwd_inner(pid: u32) -> Option<std::path::PathBuf> {
-    std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
-}
-
-fn read_proc_exe_inner(pid: u32) -> Option<String> {
-    std::fs::read_link(format!("/proc/{pid}/exe"))
-        .ok()
-        .map(|p| p.display().to_string())
-}
-
 /// Escanea procesos en bucle periódico. Diseñado para ejecutarse como
 /// tarea de bloqueo dedicada (spawn_blocking).
-pub fn scan_loop(
-    patterns: Vec<AgentProcess>,
-    tx: mpsc::Sender<SecurityEvent>,
-    protected_dirs: Vec<PathBuf>,
-    sandbox: Option<SandboxLauncher>,
-    sandbox_mode: String,
-) {
+pub fn scan_loop(patterns: Vec<AgentProcess>, tx: mpsc::Sender<SecurityEvent>) {
     let mut scanner = AgentScanner::new(patterns);
     info!(
         "agent process scanner started (/proc scan, {}s interval)",
         SCAN_INTERVAL_MS / 1000
     );
 
-    let mode_str: &str = &sandbox_mode;
-
     loop {
-        scanner.scan(&tx, &protected_dirs, sandbox.as_ref(), Some(mode_str));
+        scanner.scan(&tx);
         std::thread::sleep(std::time::Duration::from_millis(SCAN_INTERVAL_MS));
     }
 }

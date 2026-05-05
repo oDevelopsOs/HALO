@@ -207,19 +207,6 @@ impl SandboxLauncher {
             ebpf_lsm_available: check_ebpf_lsm_support(),
         }
     }
-
-    /// Versión bloqueante de `launch()` para usar desde contextos no-async
-    /// (como el scanner de agentes en spawn_blocking).
-    pub fn launch_sync(
-        &self,
-        agent_exe: &str,
-        project_dir: &Path,
-        with_landlock: bool,
-    ) -> Result<u32, anyhow::Error> {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| anyhow::anyhow!("runtime: {e}"))?;
-        rt.block_on(self.launch(agent_exe, project_dir, with_landlock))
-    }
 }
 
 // ── Capacidades del sistema ───────────────────────────────────────────────────

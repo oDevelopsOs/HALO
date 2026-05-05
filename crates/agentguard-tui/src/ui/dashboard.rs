@@ -138,12 +138,7 @@ fn render_activity(f: &mut Frame, state: &AppState, area: Rect) {
     let content = if state.incidents.is_empty() {
         "No recent incidents. Your system is clean.\n\n1-5 tabs | r refresh | p pause | h help | q quit".to_string()
     } else {
-        let mut lines: Vec<String> = state
-            .incidents
-            .iter()
-            .take(8)
-            .cloned()
-            .collect();
+        let mut lines: Vec<String> = state.incidents.iter().take(8).cloned().collect();
         lines.push(String::new());
         lines.push("1-5 tabs | r refresh | p pause | h help | q quit".into());
         lines.join("\n")
