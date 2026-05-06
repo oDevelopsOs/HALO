@@ -1,6 +1,6 @@
 //! Estado global de la aplicación TUI.
 
-use agentguard_common::SnapshotInfo;
+use agentguard_common::{AgentInfo, SnapshotInfo};
 
 use crate::ipc::IpcClient;
 
@@ -9,16 +9,18 @@ pub enum Tab {
     #[default]
     Dashboard,
     Zones,
+    Agents,
     Incidents,
     Snapshots,
     Help,
 }
 
 impl Tab {
-    pub fn all() -> [Tab; 5] {
+    pub fn all() -> [Tab; 6] {
         [
             Tab::Dashboard,
             Tab::Zones,
+            Tab::Agents,
             Tab::Incidents,
             Tab::Snapshots,
             Tab::Help,
@@ -29,7 +31,8 @@ impl Tab {
         match self {
             Tab::Dashboard => "Dashboard",
             Tab::Zones => "Protected Zones",
-            Tab::Incidents => "Recent Incidents",
+            Tab::Agents => "AI Agents",
+            Tab::Incidents => "Incidents",
             Tab::Snapshots => "Snapshots",
             Tab::Help => "? Help",
         }
@@ -59,6 +62,9 @@ pub struct AppState {
     pub daemon: DaemonStatus,
     pub incidents: Vec<String>,
     pub snapshots: Vec<SnapshotInfo>,
+    pub agents: Vec<AgentInfo>,
+    pub filter_text: String,
+    pub filter_active: bool,
     pub status_message: Option<String>,
     pub error_message: Option<String>,
 }
@@ -139,6 +145,12 @@ impl AppState {
                 }
             }
         }
+
+        // Fase 5: fetch agent stats
+        match client.agents() {
+            Ok(agents) => self.agents = agents,
+            Err(_) => self.agents = Vec::new(),
+        }
     }
 }
 
@@ -147,8 +159,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tab_all_returns_five_tabs() {
-        assert_eq!(Tab::all().len(), 5);
+    fn tab_all_returns_six_tabs() {
+        assert_eq!(Tab::all().len(), 6);
     }
 
     #[test]

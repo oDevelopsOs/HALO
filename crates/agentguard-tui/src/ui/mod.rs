@@ -1,5 +1,6 @@
 //! Módulo UI — renderizado por pestaña.
 
+mod agents;
 mod dashboard;
 mod help;
 mod incidents;
@@ -16,6 +17,7 @@ pub fn render_tab(f: &mut Frame, state: &AppState, area: Rect) {
     match state.current_tab {
         Tab::Dashboard => dashboard::render(f, state, area),
         Tab::Zones => zones::render(f, state, area),
+        Tab::Agents => agents::render_agents(f, area, state),
         Tab::Incidents => incidents::render(f, state, area),
         Tab::Snapshots => snapshots::render(f, state, area),
         Tab::Help => help::render(f, area),

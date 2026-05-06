@@ -94,15 +94,35 @@ fn run_loop<B: Backend>(
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
                     match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                        KeyCode::Char('q') | KeyCode::Esc => {
+                            if state.filter_active {
+                                state.filter_active = false;
+                                state.filter_text.clear();
+                            } else {
+                                return Ok(());
+                            }
+                        }
                         KeyCode::Char('1') => state.current_tab = Tab::Dashboard,
                         KeyCode::Char('2') => state.current_tab = Tab::Zones,
-                        KeyCode::Char('3') => state.current_tab = Tab::Incidents,
-                        KeyCode::Char('4') => state.current_tab = Tab::Snapshots,
-                        KeyCode::Char('5') | KeyCode::Char('h') => state.current_tab = Tab::Help,
+                        KeyCode::Char('3') => state.current_tab = Tab::Agents,
+                        KeyCode::Char('4') => state.current_tab = Tab::Incidents,
+                        KeyCode::Char('5') => state.current_tab = Tab::Snapshots,
+                        KeyCode::Char('6') | KeyCode::Char('h') => state.current_tab = Tab::Help,
                         KeyCode::Char('r') => {
                             state.refresh(client);
                             state.set_status("Data refreshed".into());
+                        }
+                        KeyCode::Char('f') | KeyCode::Char('/') => {
+                            state.filter_active = true;
+                        }
+                        KeyCode::Char(c) if state.filter_active => {
+                            state.filter_text.push(c);
+                        }
+                        KeyCode::Backspace if state.filter_active => {
+                            state.filter_text.pop();
+                        }
+                        KeyCode::Enter if state.filter_active => {
+                            state.filter_active = false;
                         }
                         KeyCode::Tab => {
                             let idx = state.current_tab.clone() as usize;

@@ -12,7 +12,7 @@ use anyhow::Context;
 #[cfg(unix)]
 use std::io::{BufRead, BufReader, Write};
 
-use agentguard_common::{IpcCommand, IpcResponse, SnapshotInfo};
+use agentguard_common::{AgentInfo, IpcCommand, IpcResponse, SnapshotInfo};
 
 pub struct IpcClient {
     socket_path: PathBuf,
@@ -92,6 +92,15 @@ impl IpcClient {
             IpcResponse::Ok { .. } => Ok(()),
             IpcResponse::Error { message } => anyhow::bail!("daemon error: {message}"),
             _ => Ok(()),
+        }
+    }
+
+    /// Fase 5: fetch agent stats from the daemon database.
+    pub fn agents(&self) -> Result<Vec<AgentInfo>, anyhow::Error> {
+        match self.send(IpcCommand::AgentsList)? {
+            IpcResponse::AgentsList { agents } => Ok(agents),
+            IpcResponse::Error { message } => anyhow::bail!("daemon error: {message}"),
+            other => anyhow::bail!("unexpected response: {other:?}"),
         }
     }
 
