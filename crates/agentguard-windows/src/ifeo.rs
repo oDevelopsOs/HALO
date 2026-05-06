@@ -74,7 +74,6 @@ mod windows_impl {
             .chain(std::iter::once(0))
             .collect();
         let mut hkey = HKEY::default();
-        let mut disp = 0u32;
         let ret = unsafe {
             RegCreateKeyExW(
                 HKEY_CURRENT_USER,
@@ -85,7 +84,7 @@ mod windows_impl {
                 KEY_ALL_ACCESS | KEY_WOW64_64KEY,
                 None,
                 &mut hkey,
-                Some(&mut disp),
+                None,
             )
         };
         if ret.0 != 0 {
@@ -114,7 +113,6 @@ mod windows_impl {
         );
         let subkey_wide: Vec<u16> = subkey.encode_utf16().chain(std::iter::once(0)).collect();
         let mut hkey = HKEY::default();
-        let mut disp = 0u32;
         let ret = unsafe {
             RegCreateKeyExW(
                 hive,
@@ -125,7 +123,7 @@ mod windows_impl {
                 KEY_ALL_ACCESS | KEY_WOW64_64KEY,
                 None,
                 &mut hkey,
-                Some(&mut disp),
+                None,
             )
         };
         if ret.0 != 0 {
@@ -143,12 +141,16 @@ mod windows_impl {
             .collect();
 
         let ret = unsafe {
+            let data_bytes: &[u8] = std::slice::from_raw_parts(
+                launcher_wide.as_ptr() as *const u8,
+                launcher_wide.len() * 2,
+            );
             RegSetValueExW(
                 hkey,
                 PCWSTR::from_raw(debugger_wide.as_ptr()),
                 0,
                 REG_SZ,
-                Some(launcher_wide.as_slice()),
+                Some(data_bytes),
             )
         };
         unsafe {
