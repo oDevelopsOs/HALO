@@ -1,5 +1,7 @@
-//! Integration tests for v2.1 — Sandbox Launcher + Agent Detection (Linux)
+//! Integration tests for v2.1 — Sandbox Launcher + Agent Detection (Linux only)
+//! These tests require bwrap, Landlock, and other Linux-specific features.
 
+#[cfg(target_os = "linux")]
 #[cfg(test)]
 mod sandbox_tests {
     use tempfile::TempDir;
