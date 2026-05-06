@@ -24,6 +24,7 @@ use std::time::Duration;
 
 use tokio::sync::RwLock;
 
+#[cfg(target_os = "linux")]
 use crate::displacement::{is_agentguard_shim, DisplacementDb};
 
 use notify::Watcher;

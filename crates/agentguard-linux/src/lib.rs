@@ -2,6 +2,7 @@
 //!
 //! Exports sandbox, process_watcher, displacement, autoheal, seccomp, and guard modules.
 
+#[cfg(target_os = "linux")]
 pub mod autoheal;
 #[cfg(target_os = "linux")]
 pub mod displacement;
@@ -10,6 +11,7 @@ pub mod fd_broker;
 pub mod guard;
 #[cfg(target_os = "linux")]
 pub mod landlock;
+#[cfg(target_os = "linux")]
 pub mod sandbox;
 #[cfg(target_os = "linux")]
 pub mod seccomp;

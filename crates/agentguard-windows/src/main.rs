@@ -333,6 +333,7 @@ extern "system" fn service_main_entry(_argc: u32, _argv: *mut windows::core::PWS
                         config: None,
                         protect: vec![],
                         service: true,
+                        launcher: false,
                     };
 
                     // Reportar RUNNING antes de entrar al loop
