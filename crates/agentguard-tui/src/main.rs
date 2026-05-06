@@ -165,6 +165,11 @@ fn run_loop<B: Backend>(
 }
 
 fn render_frame(f: &mut Frame, state: &AppState) {
+    // Dark background for the entire terminal
+    let bg =
+        ratatui::widgets::Block::default().style(ratatui::style::Style::default().bg(theme::BG));
+    f.render_widget(bg, f.area());
+
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([

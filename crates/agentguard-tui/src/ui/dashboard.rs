@@ -1,153 +1,272 @@
-//! Dashboard — tarjeta de estado + indicadores.
-
-#![allow(dead_code)]
+//! Dashboard tab — overview with guardian spirit and activity cards.
 
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph},
     Frame,
 };
 
 use crate::app::AppState;
 use crate::theme;
 
+/// Guardian spirits unlocked by milestones.
+const GUARDIANS: &[Guardian] = &[
+    Guardian {
+        name: "Fēnix",
+        emoji: "🦅",
+        xp: 0,
+        lore: "Protector of new beginnings",
+    },
+    Guardian {
+        name: "Lúnax",
+        emoji: "🐺",
+        xp: 500,
+        lore: "Watches over your night sessions",
+    },
+    Guardian {
+        name: "Aegis",
+        emoji: "🦉",
+        xp: 1500,
+        lore: "Keeper of protected paths",
+    },
+    Guardian {
+        name: "Kael",
+        emoji: "🐉",
+        xp: 5000,
+        lore: "Guardian of the sacred files",
+    },
+    Guardian {
+        name: "Solara",
+        emoji: "🦄",
+        xp: 15000,
+        lore: "Light of the vault",
+    },
+    Guardian {
+        name: "Zephyros",
+        emoji: "🐲",
+        xp: 50000,
+        lore: "Elder of the kernel",
+    },
+];
+
+struct Guardian {
+    name: &'static str,
+    emoji: &'static str,
+    xp: u64,
+    lore: &'static str,
+}
+
+fn current_guardian(xp: u64) -> &'static Guardian {
+    GUARDIANS
+        .iter()
+        .rev()
+        .find(|g| xp >= g.xp)
+        .unwrap_or(&GUARDIANS[0])
+}
+
+fn next_guardian(xp: u64) -> Option<&'static Guardian> {
+    GUARDIANS.iter().find(|g| g.xp > xp)
+}
+
+fn total_xp(state: &AppState) -> u64 {
+    let incidents = state.daemon.incidents_count;
+    let agents = state.agents.len() as u64;
+    let paths = (state.daemon.protected_dirs.len() + state.daemon.protected_files.len()) as u64;
+    // XP formula: incidents * 10 + agents * 100 + paths * 50
+    incidents * 10 + agents * 100 + paths * 50
+}
+
 pub fn render(f: &mut Frame, state: &AppState, area: Rect) {
-    let chunks = Layout::default()
+    let main = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(6),
-            Constraint::Length(5),
-            Constraint::Min(0),
-        ])
+        .constraints([Constraint::Length(6), Constraint::Min(0)])
         .split(area);
 
-    render_banner(f, state, chunks[0]);
-    render_cards(f, state, chunks[1]);
-    render_activity(f, state, chunks[2]);
-}
+    // ── Top: Guardian + XP bar ──
+    let top = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(18), Constraint::Min(1)])
+        .split(main[0]);
 
-fn render_banner(f: &mut Frame, state: &AppState, area: Rect) {
-    let status = if state.daemon.paused {
-        ("⏸  PROTECTION PAUSED", theme::WARNING)
-    } else if state.daemon.connected {
-        ("🛡  PROTECTED", theme::SUCCESS)
-    } else {
-        ("⚠  NOT PROTECTED", theme::DANGER)
-    };
+    render_guardian_card(f, top[0], state);
+    render_xp_section(f, top[1], state);
 
-    let subtitle = format!(
-        "v{} · {} · {} · DLP {} · Sandbox {}",
-        state.daemon.version,
-        state.daemon.guard_backend,
-        state.daemon.protection_level,
-        if state.daemon.dlp_enabled {
-            "ON"
-        } else {
-            "OFF"
-        },
-        state.daemon.sandbox_mode.as_deref().unwrap_or("N/A"),
-    );
-
-    let style = if status.1 == theme::WARNING {
-        theme::warning_style()
-    } else if status.1 == theme::SUCCESS {
-        theme::accent_style()
-    } else {
-        theme::danger_style()
-    };
-
-    let banner = Paragraph::new(format!("    {}\n    {}", status.0, subtitle,))
-        .style(style)
-        .block(Block::default().borders(Borders::NONE));
-
-    f.render_widget(banner, area);
-}
-
-fn render_cards(f: &mut Frame, state: &AppState, area: Rect) {
+    // ── Bottom: Stats cards ──
     let cards = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(33),
-            Constraint::Percentage(33),
-            Constraint::Percentage(33),
+            Constraint::Ratio(1, 4),
+            Constraint::Ratio(1, 4),
+            Constraint::Ratio(1, 4),
+            Constraint::Ratio(1, 4),
         ])
-        .split(area);
+        .split(main[1]);
 
-    let dirs_count = state.daemon.protected_dirs.len() + state.daemon.protected_files.len();
-    let inc_count = state.daemon.incidents_count;
-    let snap_count = state.snapshots.len();
-
-    render_card(
+    render_stat_card(
         f,
         cards[0],
-        "Protected Paths",
-        &dirs_count.to_string(),
+        "🛡",
+        "Protected",
         &format!(
-            "{} dirs · {} files",
-            state.daemon.protected_dirs.len(),
-            state.daemon.protected_files.len()
+            "{} paths",
+            state.daemon.protected_dirs.len() + state.daemon.protected_files.len()
         ),
-        theme::BG,
+        theme::PURPLE,
     );
-    render_card(
+    render_stat_card(
         f,
         cards[1],
-        "Incidents (24h)",
-        &inc_count.to_string(),
-        "",
-        if inc_count > 0 {
-            theme::SURFACE
-        } else {
-            theme::BG
-        },
+        "🤖",
+        "Agents",
+        &format!("{} tracked", state.agents.len()),
+        theme::PURPLE_BRIGHT,
     );
-    render_card(
+    let violation_style = if state.daemon.incidents_count > 0 {
+        theme::DANGER
+    } else {
+        theme::PURPLE_DIM
+    };
+    render_stat_card(
         f,
         cards[2],
+        "!",
+        "Incidents",
+        &format!("{} total", state.daemon.incidents_count),
+        violation_style,
+    );
+    render_stat_card(
+        f,
+        cards[3],
+        "💾",
         "Snapshots",
-        &snap_count.to_string(),
-        "",
-        theme::BG,
+        &format!("{} saved", state.snapshots.len()),
+        theme::PURPLE_BRIGHT,
     );
 }
 
-fn render_card(
-    f: &mut Frame,
-    area: Rect,
-    title: &str,
-    value: &str,
-    subtitle: &str,
-    bg: ratatui::style::Color,
-) {
-    let text = format!("{}\n\n{}\n{}", title, value, subtitle);
-    let para = Paragraph::new(text).style(theme::heading_style()).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(theme::muted_style())
-            .style(ratatui::style::Style::default().bg(bg)),
-    );
-    f.render_widget(para, area);
-}
+fn render_guardian_card(f: &mut Frame, area: Rect, state: &AppState) {
+    let xp = total_xp(state);
+    let guardian = current_guardian(xp);
 
-fn render_activity(f: &mut Frame, state: &AppState, area: Rect) {
     let block = Block::default()
-        .title(" Recent Activity ")
+        .title(" Guardian ")
         .borders(Borders::ALL)
-        .border_style(theme::BORDER);
+        .border_style(Style::default().fg(theme::PURPLE))
+        .style(Style::default().bg(theme::SURFACE));
 
-    let content = if state.incidents.is_empty() {
-        "No recent incidents. Your system is clean.\n\n1-5 tabs | r refresh | p pause | h help | q quit".to_string()
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(
+                guardian.emoji,
+                Style::default()
+                    .fg(theme::PURPLE)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(guardian.name, theme::title_style()),
+        ]),
+        Line::from(""),
+        Line::from(vec![Span::styled(guardian.lore, theme::muted_style())]),
+    ];
+
+    f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), inner);
+}
+
+fn render_xp_section(f: &mut Frame, area: Rect, state: &AppState) {
+    let xp = total_xp(state);
+    let guardian = current_guardian(xp);
+    let next = next_guardian(xp);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme::PURPLE_DIM))
+        .style(Style::default().bg(theme::SURFACE));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    // Title
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("XP ", theme::muted_style()),
+            Span::styled(format!("{}", xp), theme::title_style()),
+            Span::styled(
+                format!("    Guardian: {}", guardian.name),
+                theme::accent_style(),
+            ),
+        ])),
+        chunks[0],
+    );
+
+    // XP bar
+    if let Some(n) = next {
+        let pct = if n.xp > guardian.xp {
+            ((xp - guardian.xp) as f64 / (n.xp - guardian.xp) as f64).min(1.0)
+        } else {
+            1.0
+        };
+        let bar_width = (inner.width as f64 * pct) as u16;
+        let filled = "█".repeat(bar_width as usize);
+        f.render_widget(
+            Paragraph::new(Span::styled(&filled, Style::default().fg(theme::PURPLE))),
+            chunks[1],
+        );
+        f.render_widget(
+            Paragraph::new(format!(
+                "Next: {} ({}) — {} XP needed",
+                n.emoji,
+                n.name,
+                n.xp - xp
+            ))
+            .style(theme::muted_style()),
+            chunks[2],
+        );
     } else {
-        let mut lines: Vec<String> = state.incidents.iter().take(8).cloned().collect();
-        lines.push(String::new());
-        lines.push("1-5 tabs | r refresh | p pause | h help | q quit".into());
-        lines.join("\n")
-    };
+        f.render_widget(
+            Paragraph::new("Max level — all guardians unlocked!")
+                .style(Style::default().fg(theme::PURPLE_BRIGHT)),
+            chunks[2],
+        );
+    }
+}
 
-    let para = Paragraph::new(content)
-        .style(theme::muted_style())
-        .block(block)
-        .wrap(Wrap { trim: false });
+fn render_stat_card(f: &mut Frame, area: Rect, icon: &str, label: &str, value: &str, color: Color) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color).add_modifier(Modifier::BOLD))
+        .style(Style::default().bg(theme::SURFACE));
 
-    f.render_widget(para, area);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let lines = vec![
+        Line::from(vec![Span::styled(
+            icon,
+            Style::default().add_modifier(Modifier::BOLD),
+        )])
+        .alignment(Alignment::Center),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            value,
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        )])
+        .alignment(Alignment::Center),
+        Line::from(vec![Span::styled(label, theme::muted_style())]).alignment(Alignment::Center),
+    ];
+
+    f.render_widget(Paragraph::new(lines), inner);
 }
