@@ -556,7 +556,19 @@ match = { exe_any = ["claude", "claude-code"] }
 
 [[agent_processes]]
 name = "vscode-copilot"
-match = { exe = "code", argv_contains_any = ["copilot", "cline", "continue"] }
+match = { exe_any = ["code", "code-insiders", "codium"] }
+
+[[agent_processes]]
+name = "windsurf"
+match = { exe = "windsurf" }
+
+[[agent_processes]]
+name = "opencode"
+match = { exe = "opencode" }
+
+[[agent_processes]]
+name = "aider"
+match = { exe = "aider" }
 
 [on_violation]
 kill_process = false

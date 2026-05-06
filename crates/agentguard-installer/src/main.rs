@@ -33,6 +33,22 @@ match = { exe = "cursor" }
 name = "claude-code"
 match = { exe_any = ["claude", "claude-code"] }
 
+[[agent_processes]]
+name = "windsurf"
+match = { exe = "windsurf" }
+
+[[agent_processes]]
+name = "opencode"
+match = { exe = "opencode" }
+
+[[agent_processes]]
+name = "aider"
+match = { exe = "aider" }
+
+[[agent_processes]]
+name = "vscode-copilot"
+match = { exe_any = ["code", "code-insiders", "codium"] }
+
 [on_violation]
 kill_process = false
 snapshot_on_violation = true
