@@ -325,7 +325,7 @@ async fn main() -> Result<()> {
         let db = Arc::new(tokio::sync::RwLock::new(
             agentguard_linux::displacement::DisplacementDb::load_or_create(),
         ));
-        let entries_count = db.blocking_read().entries.len();
+        let entries_count = db.read().await.entries.len();
         if entries_count > 0 {
             let shim_path = locate_shim_binary()
                 .unwrap_or_else(|| std::path::PathBuf::from("/usr/local/bin/agentguard-shim"));
