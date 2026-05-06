@@ -66,7 +66,10 @@ const ACCESS_NET_BIND_TCP: u64 = 1;
 const ACCESS_NET_CONNECT_TCP: u64 = 1 << 1;
 
 // Combined access masks for deny-by-default Landlock
-const HANDLED_FS: u64 = ACCESS_FS_WRITE_FILE
+const HANDLED_FS: u64 = ACCESS_FS_EXECUTE
+    | ACCESS_FS_READ_FILE
+    | ACCESS_FS_READ_DIR
+    | ACCESS_FS_WRITE_FILE
     | ACCESS_FS_REMOVE_DIR
     | ACCESS_FS_REMOVE_FILE
     | ACCESS_FS_MAKE_DIR
@@ -75,7 +78,9 @@ const HANDLED_FS: u64 = ACCESS_FS_WRITE_FILE
     | ACCESS_FS_TRUNCATE;
 
 #[allow(unused)]
-const HANDLED_FS_V1: u64 = ACCESS_FS_WRITE_FILE
+const HANDLED_FS_V1: u64 = ACCESS_FS_READ_FILE
+    | ACCESS_FS_READ_DIR
+    | ACCESS_FS_WRITE_FILE
     | ACCESS_FS_REMOVE_DIR
     | ACCESS_FS_REMOVE_FILE
     | ACCESS_FS_MAKE_DIR
@@ -150,8 +155,19 @@ fn main() {
     // ── 3. Apply Landlock if configured ──
     let landlock_enabled = std::env::var("AGENTGUARD_LANDLOCK").as_deref() == Ok("1");
     if landlock_enabled {
-        let rw_dirs = read_colon_paths("AGENTGUARD_LANDLOCK_RW");
-        let ro_dirs = read_colon_paths("AGENTGUARD_LANDLOCK_RO");
+        let mut rw_dirs = read_colon_paths("AGENTGUARD_LANDLOCK_RW");
+        let mut ro_dirs = read_colon_paths("AGENTGUARD_LANDLOCK_RO");
+
+        // Always add the parent dir of the real binary as read-only,
+        // otherwise Landlock blocks execve() of the .real binary.
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(parent) = exe.parent() {
+                let parent_str = parent.display().to_string();
+                if !rw_dirs.contains(&parent_str) && !ro_dirs.contains(&parent_str) {
+                    ro_dirs.push(parent_str);
+                }
+            }
+        }
 
         if rw_dirs.is_empty() && ro_dirs.is_empty() {
             eprintln!("agentguard-shim: AGENTGUARD_LANDLOCK=1 but no directories configured");
@@ -177,6 +193,11 @@ fn read_colon_paths(var: &str) -> Vec<String> {
 // ── Landlock application (auto-detect V3 → V2 → V1) ─────────────
 
 fn apply_landlock(rw_dirs: &[String], ro_dirs: &[String]) {
+    // Landlock requires no_new_privs to be set first
+    unsafe {
+        libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+    }
+
     // Try V3 first (network + FS), then V2 (adds TRUNCATE, REFER), then V1 (basic FS)
     let handled_net = ACCESS_NET_CONNECT_TCP;
 
@@ -275,9 +296,13 @@ fn add_single_rule(fd: i32, path: &str, access: u64) {
         Err(_) => return,
     };
 
-    let dir_fd = unsafe { libc::open(c_path.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
+    let dir_fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
     if dir_fd < 0 {
-        eprintln!("agentguard-shim: cannot open {} for Landlock rule", path);
+        eprintln!(
+            "agentguard-shim: cannot open {} for Landlock rule (errno {})",
+            path,
+            unsafe { *libc::__errno_location() }
+        );
         return;
     }
 
@@ -737,6 +762,18 @@ fn exec_real() {
     // Build execvp: argv[0] = real binary path, rest = original args
     let mut c_args: Vec<CString> = Vec::new();
     c_args.push(real_cstr);
+
+    // Pass the original arguments (skip argv[0] = shim path)
+    let args: Vec<String> = std::env::args().collect();
+    for arg in args.iter().skip(1) {
+        c_args.push(match CString::new(arg.as_bytes()) {
+            Ok(c) => c,
+            Err(_) => {
+                eprintln!("agentguard-shim: invalid argument: {}", arg);
+                std::process::exit(1);
+            }
+        });
+    }
 
     // Build the execvp argument array
     let mut c_argv: Vec<*const libc::c_char> = c_args.iter().map(|a| a.as_ptr()).collect();
