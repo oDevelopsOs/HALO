@@ -365,6 +365,11 @@ pub struct SandboxConfig {
     pub montar_solo_proyecto: bool,
     #[serde(default = "default_true")]
     pub morir_con_padre: bool,
+    /// Enable --unshare-net for full network isolation.
+    /// When enabled, the DLP proxy is unreachable from inside the sandbox.
+    /// Use eBPF NET_RESTRICT_MODE as kernel-level mitigation instead.
+    #[serde(default)]
+    pub network_isolation: bool,
     #[serde(default)]
     pub bwrap_extra_args: Vec<String>,
 }
@@ -376,6 +381,7 @@ impl Default for SandboxConfig {
             auto_detectar_agentes: true,
             montar_solo_proyecto: true,
             morir_con_padre: true,
+            network_isolation: false,
             bwrap_extra_args: Vec::new(),
         }
     }

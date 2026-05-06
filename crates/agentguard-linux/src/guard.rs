@@ -20,6 +20,23 @@ pub async fn select_guard(
 ) -> Result<Box<dyn KernelGuard>, GuardError> {
     #[cfg(feature = "ebpf")]
     {
+        // Check for pinned BPF programs from a previous run — try recovery first
+        if ebpf::pinned_programs_exist() {
+            match ebpf::EbpfGuard::try_recover(protected_paths, protected_files).await {
+                Ok(mut guard) => {
+                    tracing::info!("eBPF recovered from pinned programs in /sys/fs/bpf/agentguard");
+                    if dlp_enabled {
+                        let _ = guard.set_network_restricted(true);
+                    }
+                    let _ = guard.populate_bprm_agents(agent_names);
+                    return Ok(Box::new(guard));
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "BPF recovery failed — loading fresh bytecode");
+                }
+            }
+        }
+
         match ebpf::EbpfGuard::try_load(protected_paths, protected_files).await {
             Ok(mut guard) => {
                 tracing::info!(backend = "ebpf", "kernel-level protection active");

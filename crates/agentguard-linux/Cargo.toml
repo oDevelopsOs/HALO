@@ -56,6 +56,13 @@ include_bytes_aligned = "0.1"
 which = "7"
 notify-rust = "4"
 
+# v2.x: Displacement + shim config
+sha2 = { workspace = true }
+
+# Fase 3: Telemetry
+ureq = { version = "3", features = ["_tls"] }
+hex = "0.4"
+
 # Linux-only: Landlock kernel API
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4"

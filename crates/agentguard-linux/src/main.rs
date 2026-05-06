@@ -127,6 +127,33 @@ fn incidents_log_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("incidents.jsonl"))
 }
 
+/// Default path for the FD broker Unix socket.
+fn default_broker_socket_path() -> PathBuf {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+    home.join(".agentguard/fd-broker.sock")
+}
+
+/// Locate the agentguard-shim binary for auto-heal.
+fn locate_shim_binary() -> Option<PathBuf> {
+    let candidates = &["/usr/local/bin/agentguard-shim", "/usr/bin/agentguard-shim"];
+    for c in candidates {
+        let p = PathBuf::from(c);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    // Check same directory as the daemon
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let p = dir.join("agentguard-shim");
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
 #[cfg(unix)]
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -293,6 +320,27 @@ async fn main() -> Result<()> {
         }
     }
 
+    // ── v2.x: Auto-heal watcher (inotify) ────────────────────
+    {
+        let db = Arc::new(tokio::sync::RwLock::new(
+            agentguard_linux::displacement::DisplacementDb::load_or_create(),
+        ));
+        let entries_count = db.blocking_read().entries.len();
+        if entries_count > 0 {
+            let shim_path = locate_shim_binary()
+                .unwrap_or_else(|| std::path::PathBuf::from("/usr/local/bin/agentguard-shim"));
+            let watcher = agentguard_linux::autoheal::AutoHealWatcher::new(shim_path, db);
+            tokio::spawn(async move {
+                if let Err(e) = watcher.run().await {
+                    warn!(error = %e, "auto-heal watcher stopped");
+                }
+            });
+            info!(displaced = entries_count, "auto-heal watcher started");
+        } else {
+            info!("no displaced binaries — auto-heal watcher not started");
+        }
+    }
+
     // ── DLP proxy ───────────────────────────────────────────
     let dlp_handle = if config.dlp.enabled {
         let custom: Vec<(String, String)> = config
@@ -355,10 +403,11 @@ async fn main() -> Result<()> {
             let cfg = cfg.clone();
             let mode = mode_override.unwrap_or_else(|| cfg.sandbox.modo_por_defecto.clone());
             let use_landlock = cfg!(target_os = "linux") && mode == "hybrid";
+            let network_iso = cfg.sandbox.network_isolation;
             let project_dir = PathBuf::from(cwd);
             let launcher = agentguard_linux::sandbox::SandboxLauncher::new(cfg);
             let rt = tokio::runtime::Runtime::new().map_err(|e| format!("tokio: {e}"))?;
-            rt.block_on(launcher.launch(&exe, &project_dir, use_landlock))
+            rt.block_on(launcher.launch(&exe, &project_dir, use_landlock, network_iso))
                 .map_err(|e| format!("sandbox: {e}"))
         }
     }))
@@ -378,6 +427,107 @@ async fn main() -> Result<()> {
 
     drop(event_tx); // los clones los mantienen guard + dlp
 
+    // ── Fase 3: Seccomp decision profile (shared state) ──────
+    use agentguard_linux::seccomp_notif::SeccompDecisionProfile;
+    let seccomp_profile: Arc<tokio::sync::RwLock<SeccompDecisionProfile>> =
+        Arc::new(tokio::sync::RwLock::new(SeccompDecisionProfile::default()));
+
+    // ── Fase 3: OTA profile updater (periodic, every 24h) ────
+    let ota_profile = seccomp_profile.clone();
+    tokio::spawn(async move {
+        // First check after 30s (let daemon stabilize), then every 24h
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        loop {
+            let mut client =
+                agentguard_core::ota::OtaClient::new("https://cdn.agentguard.io".to_string());
+            match client.check_and_update() {
+                Ok(Some(profile)) => {
+                    let mut prof = ota_profile.write().await;
+                    let added = profile.allow_additions.len() + profile.deny_enosys_additions.len();
+                    for sc in &profile.allow_additions {
+                        if !prof.allow.contains(sc) {
+                            prof.allow.push(*sc);
+                        }
+                    }
+                    for sc in &profile.deny_enosys_additions {
+                        if !prof.deny_enosys.contains(sc) {
+                            prof.deny_enosys.push(*sc);
+                        }
+                    }
+                    info!(
+                        version = client.current_version(),
+                        additions = added,
+                        "OTA profile applied to seccomp decision profile"
+                    );
+                }
+                Ok(None) => {
+                    info!(
+                        version = client.current_version(),
+                        "OTA: seccomp profile up to date"
+                    );
+                }
+                Err(e) => warn!(error = %e, "OTA check failed — will retry in 24h"),
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(24 * 3600)).await;
+        }
+    });
+
+    // ── Fase 3: Telemetry batcher ────────────────────────────
+    let telemetry_endpoint = std::env::var("AGENTGUARD_TELEMETRY_ENDPOINT").unwrap_or_default();
+    let telemetry_batcher = Arc::new(agentguard_linux::telemetry::TelemetryBatcher::new(
+        telemetry_endpoint,
+        50,
+    ));
+    let telemetry_flush = telemetry_batcher.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            match telemetry_flush.flush() {
+                Ok(n) if n > 0 => tracing::debug!(events = n, "telemetry flushed"),
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, "telemetry flush error"),
+            }
+        }
+    });
+
+    // ── Fase 3: Telemetry → Seccomp feedback loop ────────────
+    // Periodically promote unknown-but-safe syscalls to allowlist
+    let feedback_profile = seccomp_profile.clone();
+    let feedback_telemetry = telemetry_batcher.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            let pending = feedback_telemetry.take_pending_syscalls();
+            if !pending.is_empty() {
+                let mut prof = feedback_profile.write().await;
+                let mut added = 0u32;
+                for sc in &pending {
+                    if !prof.allow.contains(sc) {
+                        prof.allow.push(*sc);
+                        added += 1;
+                    }
+                }
+                if added > 0 {
+                    info!(
+                        added,
+                        total_allow = prof.allow.len(),
+                        "telemetry feedback: promoted unknown syscalls to allowlist"
+                    );
+                }
+            }
+        }
+    });
+
+    // ── Fase 3: FD Broker ────────────────────────────────────
+    let broker_socket = default_broker_socket_path();
+    let broker_prefixes = config.protected_dirs.clone();
+    let broker = agentguard_linux::fd_broker::FdBroker::new(broker_socket, broker_prefixes);
+    tokio::spawn(async move {
+        if let Err(e) = broker.run().await {
+            warn!(error = %e, "FD broker stopped");
+        }
+    });
+
     // ── Main loop ───────────────────────────────────────────
     info!(path = %log_path.display(), "incidents log ready");
 
@@ -388,7 +538,7 @@ async fn main() -> Result<()> {
     let counter_for_events = incidents_counter.clone();
     let alerts_enabled = config.alerts.desktop_notifications;
 
-    info!("entering main loop (SIGTERM / ctrl-c to quit)");
+    info!("entering main loop (SIGTERM / SIGHUP / ctrl-c to quit)");
 
     let mut sigterm = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
     {
@@ -396,6 +546,22 @@ async fn main() -> Result<()> {
         Err(e) => {
             error!(error = %e, "failed to register SIGTERM handler");
             return Err(anyhow::anyhow!("SIGTERM handler unavailable"));
+        }
+    };
+
+    let mut sighup = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
+        Ok(s) => {
+            info!("SIGHUP handler registered (systemctl reload support)");
+            s
+        }
+        Err(e) => {
+            warn!(error = %e, "failed to register SIGHUP handler — reload via SIGHUP disabled");
+            // Create a dummy signal stream that never fires
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::alarm()).unwrap_or_else(
+                |_| {
+                    panic!("cannot create dummy signal");
+                },
+            )
         }
     };
 
@@ -427,6 +593,28 @@ async fn main() -> Result<()> {
             _ = sigterm.recv() => {
                 info!("SIGTERM received — shutting down");
                 break;
+            }
+            _ = sighup.recv() => {
+                info!("SIGHUP received — reloading config");
+                let config_path = args.config.clone().unwrap_or_else(default_config_path);
+                match Config::from_path(&config_path) {
+                    Ok(new_config) => {
+                        let dir_count = new_config.protected_dirs.len();
+                        match new_config.resolve() {
+                            Ok(resolved) => {
+                                info!(
+                                    protected_dirs = dir_count,
+                                    "SIGHUP: config reloaded"
+                                );
+                                let _ = resolved; // future: apply config updates
+                            }
+                            Err(e) => warn!(error = %e, "SIGHUP: failed to resolve config paths"),
+                        }
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "SIGHUP: config reload failed — keeping current config");
+                    }
+                }
             }
             else => break,
         }

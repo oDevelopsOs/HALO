@@ -8,6 +8,7 @@
 //! - `hybrid`:  bwrap + Landlock (bloquea acceso a todo excepto el proyecto)
 //! - `monitor`:  sin sandbox, solo observación (para fallback)
 
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::process::Command;
@@ -37,6 +38,7 @@ impl SandboxLauncher {
         agent_exe: &str,
         project_dir: &Path,
         with_landlock: bool,
+        with_network_isolation: bool,
     ) -> Result<u32, anyhow::Error> {
         // Verificar que bwrap está instalado
         // TOCTOU note: which::which resolves at check time; binary could be
@@ -92,47 +94,78 @@ impl SandboxLauncher {
         cmd.args(["--ro-bind", agent_str, agent_str]);
 
         // ── Aislamiento de namespaces ────────────────────────────────────────
-        // NOTA: NO usamos --unshare-net para que el DLP proxy funcione.
-        // Esto significa que el agente puede hacer conexiones de red directas
-        // (bypasseando el proxy DLP). Mitigación: el proxy se inyecta vía env vars.
-        // TODO: Añadir --seccomp con filtro de syscalls para reducir superficie de ataque
-        // (mount, ptrace, bpf, unshare). Requiere compilar un filtro BPF por separado.
+        // NOTA: --unshare-net está DESHABILITADO por defecto para que el DLP
+        // proxy funcione. Si se activa, el agente NO puede alcanzar el proxy
+        // DLP en 127.0.0.1 (está en otro namespace de red). En ese caso, la
+        // mitigación es el eBPF NET_RESTRICT_MODE (bloquea conexiones no-localhost
+        // a nivel de kernel).
         cmd.args([
             "--unshare-pid",
             "--unshare-ipc",
             "--unshare-uts",
             "--unshare-user",
-            // --init: crea un proceso init (PID 1) en el namespace PID
-            // que reapea procesos huérfanos (previene zombie leak).
             "--init",
-            // --unshare-cgroup-try: intenta aislar cgroup namespace.
-            // Falla silenciosamente si el kernel no lo soporta.
             "--unshare-cgroup-try",
         ]);
 
-        // ── Seccomp (TODO) ─────────────────────────────────────────────────
-        // Para reducir la superficie de ataque del kernel, se puede añadir
-        // un filtro seccomp-bpf que bloquee syscalls peligrosas:
-        //
-        //   --seccomp <FD>
-        //
-        // El filtro debe compilarse con libseccomp o escribirse en BPF raw:
-        //   sudo apt install libseccomp-dev
-        //   echo 'mount: 1; ptrace: 1; bpf: 1; unshare: 1' \
-        //     | scmp_bpf_disasm > seccomp_filter.bpf
-        //
-        // Syscalls a bloquear en el sandbox:
-        //   - mount, umount2: prevenir remounts del filesystem
-        //   - ptrace: prevenir attachment a otros procesos
-        //   - bpf: prevenir carga de programas eBPF adicionales
-        //   - unshare: prevenir escape del namespace
-        //   - kexec_load, kexec_file_load: prevenir reemplazo del kernel
-        //   - delete_module, init_module, finit_module: prevenir carga de módulos
-        //
-        // El FD debe pasarse como descriptor de archivo abierto al bwrap:
-        //   let fd = std::fs::File::open("seccomp_filter.bpf")?;
-        //   cmd.arg("--seccomp");
-        //   cmd.arg(fd.as_raw_fd().to_string());
+        if with_network_isolation {
+            cmd.arg("--unshare-net");
+            tracing::info!("network namespace isolation enabled (DLP proxy will be unreachable)");
+        }
+
+        // ── Seccomp (Fase 2) ──────────────────────────────────────────────
+        // Apply a BPF filter that blocks dangerous syscalls inside the sandbox.
+        // The filter is built from the same allowlist/kill list used by the
+        // shim and the daemon's USER_NOTIF handler.
+        let seccomp_fd = {
+            let (filter, _) = crate::seccomp::build_seccomp_filter(
+                &[], // no custom allowlist — default kill-only
+                &[], // no ambiguous — kill is enough in bwrap
+                crate::seccomp::ALWAYS_KILL_SYSCALLS,
+            );
+            if !filter.is_empty() {
+                // Serialize filter to raw bytes (SockFilter is repr(C), 8 bytes each)
+                let raw_bytes: &[u8] = unsafe {
+                    std::slice::from_raw_parts(
+                        filter.as_ptr() as *const u8,
+                        filter.len() * std::mem::size_of::<crate::seccomp::SockFilter>(),
+                    )
+                };
+                let tmp_path = std::env::temp_dir()
+                    .join(format!("agentguard-seccomp-{}.bpf", std::process::id()));
+                if let Err(e) = std::fs::write(&tmp_path, raw_bytes) {
+                    tracing::warn!(error = %e, "seccomp: failed to write BPF filter");
+                    None
+                } else {
+                    match std::fs::File::open(&tmp_path) {
+                        Ok(file) => {
+                            let fd = file.as_raw_fd();
+                            // Prevent the temp file from being closed before bwrap reads it.
+                            // We duplicate the fd so the File drop doesn't close the one bwrap uses.
+                            let dup_fd = unsafe { libc::dup(fd) };
+                            let _ = std::fs::remove_file(&tmp_path); // clean up temp file
+                            if dup_fd < 0 {
+                                None
+                            } else {
+                                tracing::debug!(fd = dup_fd, "seccomp BPF filter passed to bwrap");
+                                Some(dup_fd.to_string())
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "seccomp: failed to open BPF filter file");
+                            None
+                        }
+                    }
+                }
+            } else {
+                None
+            }
+        };
+
+        if let Some(ref fd_str) = seccomp_fd {
+            cmd.arg("--seccomp");
+            cmd.arg(fd_str);
+        }
 
         if self.config.sandbox.morir_con_padre {
             cmd.arg("--die-with-parent");

@@ -9,6 +9,7 @@ pub mod dlp;
 pub mod events;
 pub mod guard;
 pub mod ipc_server;
+pub mod ota;
 pub mod updater;
 pub mod vault;
 

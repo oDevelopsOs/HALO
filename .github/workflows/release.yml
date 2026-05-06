@@ -1,0 +1,181 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── Build Linux binaries ──────────────────────────────────
+  build-linux:
+    name: linux (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-unknown-linux-gnu, x86_64-unknown-linux-musl]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install musl-tools (for musl target)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build agentguard-cli
+        run: cargo build -p agentguard-cli --release --target ${{ matrix.target }}
+
+      - name: Build agentguard-linux
+        run: cargo build -p agentguard-linux --release --target ${{ matrix.target }}
+
+      - name: Build agentguard-shim (musl only)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: cargo build --manifest-path crates/agentguard-shim/Cargo.toml --release --target ${{ matrix.target }}
+
+      - name: Package binaries
+        run: |
+          mkdir -p dist
+          SUFFIX=""
+          if [ "${{ matrix.target }}" = "x86_64-unknown-linux-musl" ]; then
+            SUFFIX="-musl"
+            cp target/${{ matrix.target }}/release/agentguard-shim dist/
+          fi
+          cp target/${{ matrix.target }}/release/agentguard dist/agentguard$SUFFIX || true
+          cp target/${{ matrix.target }}/release/agentguard-cli dist/agentguard-cli$SUFFIX || true
+          cp target/${{ matrix.target }}/release/agentguard-linux dist/agentguard-linux$SUFFIX || true
+          cd dist && sha256sum * > SHA256SUMS && cd ..
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-linux-${{ matrix.target }}
+          path: dist/*
+
+  # ── Build Windows binaries (cross-compile) ────────────────
+  build-windows:
+    name: windows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install MinGW
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+
+      - name: Build agentguard-cli (Windows)
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: x86_64-w64-mingw32-gcc
+        run: cargo build -p agentguard-cli --release --target x86_64-pc-windows-gnu
+
+      - name: Build agentguard-windows
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: x86_64-w64-mingw32-gcc
+        run: cargo build -p agentguard-windows --release --target x86_64-pc-windows-gnu
+
+      - name: Build agentguard-installer (Windows)
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: x86_64-w64-mingw32-gcc
+        run: cargo build -p agentguard-installer --release --target x86_64-pc-windows-gnu
+
+      - name: Package binaries
+        run: |
+          mkdir -p dist
+          cp target/x86_64-pc-windows-gnu/release/agentguard.exe dist/ || true
+          cp target/x86_64-pc-windows-gnu/release/agentguard-cli.exe dist/ || true
+          cp target/x86_64-pc-windows-gnu/release/agentguard-windows.exe dist/
+          cp target/x86_64-pc-windows-gnu/release/agentguard-installer.exe dist/ || true
+          cd dist && sha256sum * > SHA256SUMS && cd ..
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-windows
+          path: dist/*
+
+  # ── Build eBPF bytecode ───────────────────────────────────
+  build-ebpf:
+    name: ebpf-bytecode
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - name: Build eBPF
+        working-directory: crates/agentguard-ebpf
+        run: |
+          rustup +nightly target add bpfel-unknown-none || true
+          if rustup +nightly target list --installed | grep -q bpfel-unknown-none; then
+            cargo +nightly build --release --target bpfel-unknown-none -Z build-std=core
+            mkdir -p ../../dist
+            cp target/bpfel-unknown-none/release/*.o ../../dist/ || true
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ebpf-bytecode
+          path: dist/*.o
+
+  # ── Create GitHub Release ─────────────────────────────────
+  release:
+    name: publish
+    needs: [build-linux, build-windows, build-ebpf]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*
+          path: dist/
+          merge-multiple: true
+
+      - name: Generate combined checksums
+        run: |
+          cd dist
+          find . -type f -not -name "SHA256SUMS" -exec sha256sum {} \; | sort > SHA256SUMS
+          echo "=== SHA256SUMS ==="
+          cat SHA256SUMS
+
+      - name: List artifacts
+        run: find dist -type f | sort
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: AgentGuard ${{ github.ref_name }}
+          body: |
+            ## AgentGuard ${{ github.ref_name }}
+
+            ### Linux
+            - `agentguard` — CLI tool
+            - `agentguard-linux` — daemon (eBPF + userspace)
+            - `agentguard-shim` — static shim (musl, ~400 KB)
+
+            ### Windows
+            - `agentguard-windows.exe` — daemon (NTFS DENY ACEs + AppContainer/Low IL)
+            - `agentguard-cli.exe` — CLI tool
+            - `agentguard-installer.exe` — Bootstrap installer
+
+            ### Quick install
+            ```bash
+            curl -fsSL https://get.agentguard.io | bash
+            ```
+
+            ### Verify
+            ```bash
+            sha256sum -c SHA256SUMS
+            ```
+          files: dist/*
+          generate_release_notes: true

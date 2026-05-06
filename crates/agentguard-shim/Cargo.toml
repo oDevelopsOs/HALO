@@ -1,0 +1,24 @@
+[workspace]
+
+[package]
+name = "agentguard-shim"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "BUSL-1.1"
+description = "AgentGuard static shim — applies Landlock + seccomp before exec'ing the real AI agent binary"
+publish = false
+
+[[bin]]
+name = "agentguard-shim"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+panic = "abort"
+codegen-units = 1

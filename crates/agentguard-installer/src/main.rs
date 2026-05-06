@@ -61,14 +61,14 @@ channel = "stable"
 const SYSTEMD_UNIT: &str = r#"[Unit]
 Description=AgentGuard — AI Agent Security Daemon
 After=network.target
-StartLimitIntervalSec=0
-StartLimitBurst=3
+StartLimitIntervalSec=10
+StartLimitBurst=5
 
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/agentguard-linux
 Restart=always
-RestartSec=1
+RestartSec=100ms
 User=root
 AmbientCapabilities=CAP_BPF CAP_SYS_ADMIN CAP_NET_ADMIN CAP_PERFMON
 CapabilityBoundingSet=CAP_BPF CAP_SYS_ADMIN CAP_NET_ADMIN CAP_PERFMON
@@ -279,6 +279,12 @@ fn install_windows(target: &Target, version: &str) -> Result<()> {
     println!("✓ AgentGuard installed on Windows");
     println!("  agentguard status       # check protection");
     println!("  agentguard protect C:\\Projects  # protect a folder");
+
+    // ── Windows binary displacement ──
+    println!("  → Scanning for AI agents...");
+    let daemon_path = format!("{install_dir}\\agentguard-windows.exe");
+    install_displacement_windows(&daemon_path)?;
+
     Ok(())
 }
 
@@ -291,6 +297,386 @@ fn install_bin(dir: &str, name: &str, data: &[u8]) -> Result<()> {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
     }
     Ok(())
+}
+
+// ── Binary displacement (Fase 1 — v2.0) ─────────────────────
+
+/// Known AI agent executable names to look for in PATH.
+const KNOWN_AGENTS: &[&str] = &[
+    "claude",
+    "claude-code",
+    "cursor",
+    "opencode",
+    "aider",
+    "windsurf",
+    "code",
+    "codium",
+    "vscode-copilot",
+];
+
+/// Magic bytes in the AgentGuard shim ELF binary.
+const SHIM_MAGIC: &[u8] = b"AGENTGUARD_SHIM_V1\x00";
+const MAGIC_SCAN_BYTES: usize = 8192;
+
+/// Displacement database — persisted to ~/.agentguard/displaced.json.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct DisplacementDb {
+    #[serde(skip)]
+    db_path: std::path::PathBuf,
+    entries: Vec<DisplacementEntry>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DisplacementEntry {
+    shim_path: std::path::PathBuf,
+    real_path: std::path::PathBuf,
+    agent_name: String,
+    displaced_at: u64,
+    shim_hash: String,
+}
+
+use std::path::{Path, PathBuf};
+
+fn default_db_path() -> PathBuf {
+    #[cfg(unix)]
+    {
+        let uid = unsafe { libc::getuid() };
+        if uid == 0 {
+            return PathBuf::from("/var/lib/agentguard/displaced.json");
+        }
+    }
+    dirs_next().join(".agentguard/displaced.json")
+}
+
+fn dirs_next() -> PathBuf {
+    #[cfg(unix)]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home);
+        }
+    }
+    #[cfg(windows)]
+    {
+        if let Ok(home) = std::env::var("USERPROFILE") {
+            return PathBuf::from(home);
+        }
+    }
+    PathBuf::from("/tmp")
+}
+
+fn load_displacement_db() -> DisplacementDb {
+    let db_path = default_db_path();
+    match std::fs::read_to_string(&db_path) {
+        Ok(json) => match serde_json::from_str::<DisplacementDb>(&json) {
+            Ok(mut db) => {
+                db.db_path = db_path;
+                db
+            }
+            Err(_) => DisplacementDb {
+                db_path,
+                entries: vec![],
+            },
+        },
+        Err(_) => DisplacementDb {
+            db_path,
+            entries: vec![],
+        },
+    }
+}
+
+fn save_displacement_db(db: &DisplacementDb) -> Result<()> {
+    if let Some(parent) = db.db_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string_pretty(db)?;
+    std::fs::write(&db.db_path, json)?;
+    Ok(())
+}
+
+/// Check if a file is already an AgentGuard shim (contains magic bytes).
+fn is_agentguard_shim(path: &Path) -> bool {
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+    let mut buf = vec![0u8; MAGIC_SCAN_BYTES];
+    let n = match std::io::Read::read(&mut file, &mut buf) {
+        Ok(n) => n,
+        Err(_) => return false,
+    };
+    buf[..n].windows(SHIM_MAGIC.len()).any(|w| w == SHIM_MAGIC)
+}
+
+/// Check if the current user can write to a file.
+fn is_user_writable(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        let uid = unsafe { libc::getuid() };
+        match std::fs::metadata(path) {
+            Ok(m) => {
+                use std::os::unix::fs::MetadataExt;
+                m.uid() == uid || uid == 0
+            }
+            Err(_) => false,
+        }
+    }
+    #[cfg(windows)]
+    {
+        std::fs::metadata(path).is_ok()
+    }
+}
+
+/// Compute SHA256 of a file for the displacement database.
+fn compute_shim_hash(path: &Path) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = std::io::Read::read(&mut file, &mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// Find known AI agents in Windows PATH (using `where` or manual scan).
+fn find_agents_windows() -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    // Check common install locations
+    let search_dirs = &[
+        r"C:\Users",
+        r"C:\Program Files",
+        &format!(r"C:\Users\{}\AppData\Local\Programs", whoami()),
+        &format!(r"C:\Users\{}\AppData\Roaming\npm", whoami()),
+    ];
+
+    for search_dir in search_dirs {
+        if !Path::new(search_dir).is_dir() {
+            continue;
+        }
+        for agent in KNOWN_AGENTS.iter() {
+            let agent_exe = format!("{}.exe", agent);
+            // Walk subdirs (max depth 3) looking for the agent
+            find_exe_in_dir(search_dir, &agent_exe, 3, &mut found);
+        }
+    }
+    found
+}
+
+fn whoami() -> String {
+    std::env::var("USERNAME").unwrap_or_else(|_| "Default".into())
+}
+
+fn find_exe_in_dir(dir: &str, exe_name: &str, max_depth: u32, found: &mut Vec<PathBuf>) {
+    if max_depth == 0 {
+        return;
+    }
+    let dir_path = Path::new(dir);
+    let candidate = dir_path.join(exe_name);
+    if candidate.exists() && !is_agentguard_shim(&candidate) {
+        found.push(candidate);
+    }
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                let subdir = entry.path();
+                if let Some(s) = subdir.to_str() {
+                    find_exe_in_dir(s, exe_name, max_depth - 1, found);
+                }
+            }
+        }
+    }
+}
+
+/// Install binary displacement for all detected Windows agents.
+fn install_displacement_windows(launcher_path: &str) -> Result<()> {
+    let agents = find_agents_windows();
+    if agents.is_empty() {
+        println!("    No AI agents found to displace.");
+        return Ok(());
+    }
+
+    let mut db = load_displacement_db();
+    let launcher = PathBuf::from(launcher_path);
+    let mut count = 0;
+
+    for agent_binary in &agents {
+        let name = agent_binary
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        if db.entries.iter().any(|e| e.shim_path == *agent_binary) {
+            continue;
+        }
+
+        println!("    → {} (displacing...)", agent_binary.display());
+
+        let parent = agent_binary.parent().unwrap().to_path_buf();
+        let real_path = parent.join(format!(".{}.real.exe", name));
+
+        std::fs::rename(agent_binary, &real_path)?;
+        std::fs::copy(&launcher, agent_binary)?;
+
+        let hash = compute_shim_hash(&launcher)?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        db.entries.push(DisplacementEntry {
+            shim_path: agent_binary.clone(),
+            real_path,
+            agent_name: name,
+            displaced_at: now,
+            shim_hash: hash,
+        });
+        count += 1;
+    }
+
+    if count > 0 {
+        save_displacement_db(&db)?;
+        println!("    ✓ Displaced {} Windows agent(s)", count);
+    }
+
+    Ok(())
+}
+fn find_agents_in_path() -> Vec<PathBuf> {
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    let mut found = Vec::new();
+
+    for dir in path_var.split(':') {
+        if dir.is_empty() {
+            continue;
+        }
+        let dir_path = Path::new(dir);
+        if !dir_path.is_dir() {
+            continue;
+        }
+
+        for &agent_name in KNOWN_AGENTS {
+            let agent_path = dir_path.join(agent_name);
+            if agent_path.exists() && !is_agentguard_shim(&agent_path) {
+                found.push(agent_path);
+            }
+        }
+    }
+
+    // Sort: user-writable first, system paths last
+    found.sort_by_key(|p| !is_user_writable(p));
+    found
+}
+
+/// Install binary displacement for all detected agents.
+fn install_displacement(shim_path: &Path) -> Result<()> {
+    let agents = find_agents_in_path();
+
+    if agents.is_empty() {
+        println!("  No AI agents found in PATH to displace.");
+        return Ok(());
+    }
+
+    let mut db = load_displacement_db();
+    let mut displaced_count = 0;
+    let mut warned_count = 0;
+
+    let shim_hash = compute_shim_hash(shim_path)?;
+
+    for agent_binary in &agents {
+        let name = agent_binary
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        // Already displaced?
+        if db.entries.iter().any(|e| e.shim_path == *agent_binary) {
+            continue;
+        }
+
+        // Not writable?
+        if !is_user_writable(agent_binary) {
+            println!(
+                "  ⚠ {} — not writable (system path, needs root)",
+                agent_binary.display()
+            );
+            println!("    Suggestion: reinstall {name} via npm/pip/cargo in user directory");
+            warned_count += 1;
+            continue;
+        }
+
+        // Compute .real path
+        let parent = agent_binary.parent().unwrap().to_path_buf();
+        let real_path = parent.join(format!(".{name}.real"));
+
+        // Displace
+        println!("  → {} → {}", agent_binary.display(), real_path.display());
+        std::fs::rename(agent_binary, &real_path)
+            .with_context(|| format!("rename {}", agent_binary.display()))?;
+
+        if let Err(e) = std::fs::copy(shim_path, agent_binary) {
+            // Rollback
+            let _ = std::fs::rename(&real_path, agent_binary);
+            return Err(anyhow::anyhow!("copy shim: {e}"));
+        }
+
+        // Preserve permissions
+        if let Ok(meta) = std::fs::metadata(&real_path) {
+            let _ = std::fs::set_permissions(agent_binary, meta.permissions());
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        db.entries.push(DisplacementEntry {
+            shim_path: agent_binary.clone(),
+            real_path,
+            agent_name: name,
+            displaced_at: now,
+            shim_hash: shim_hash.clone(),
+        });
+
+        displaced_count += 1;
+    }
+
+    if displaced_count > 0 {
+        save_displacement_db(&db)?;
+        println!(
+            "  ✓ Displaced {} agent(s) with AgentGuard shim",
+            displaced_count
+        );
+    }
+    if warned_count > 0 {
+        println!("  ⚠ {warned_count} agent(s) not displaced (system paths, need root)");
+        println!(
+            "  ℹ Agents launched by absolute path from system dirs are NOT protected without root."
+        );
+        println!("  ℹ Run 'sudo agentguard install' for full protection.");
+    }
+
+    Ok(())
+}
+
+fn locate_shim_binary() -> Option<PathBuf> {
+    // Look in the same directory as the installer
+    if let Ok(exe) = std::env::current_exe() {
+        let dir = exe.parent().unwrap_or(Path::new("."));
+        let candidate = dir.join("agentguard-shim");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    // Look in ~/.agentguard/
+    let home = dirs_next();
+    let candidate = home.join(".agentguard/agentguard-shim");
+    if candidate.exists() {
+        return Some(candidate);
+    }
+    None
 }
 
 fn main() -> Result<()> {
@@ -319,6 +705,20 @@ fn main() -> Result<()> {
     match target.platform {
         Platform::Linux => install_linux(&target, &version)?,
         Platform::Windows => install_windows(&target, &version)?,
+    }
+
+    // ── Binary displacement (Fase 1 — v2.0) ──
+    #[cfg(unix)]
+    {
+        println!("  → Scanning for AI agents in PATH...");
+        if let Some(shim) = locate_shim_binary() {
+            install_displacement(&shim)?;
+        } else {
+            println!("  ⚠ agentguard-shim not found — run 'agentguard-install-shim' or build from source");
+            println!(
+                "    Binary displacement skipped. AgentGuard daemon will protect via scanning."
+            );
+        }
     }
 
     Ok(())

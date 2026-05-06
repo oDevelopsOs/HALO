@@ -25,8 +25,11 @@
 //! El daemon debe correr como SYSTEM o Administrador para poder aplicar
 //! NTFS DENY ACEs.
 
+mod displacement;
 mod guard;
 mod helpers;
+mod ifeo;
+mod launcher;
 mod process_watcher;
 mod sandbox;
 
@@ -67,6 +70,11 @@ struct Args {
     /// Run as a Windows Service (registers with SCM)
     #[arg(long)]
     service: bool,
+
+    /// Run as IFEO launcher — receives original exe path from NT kernel
+    /// and launches it inside AppContainer/Low IL sandbox.
+    #[arg(long)]
+    launcher: bool,
 }
 
 fn init_tracing() {
@@ -182,6 +190,8 @@ async fn main() -> Result<()> {
         {
             anyhow::bail!("--service is only supported on Windows");
         }
+    } else if args.launcher {
+        run_launcher()
     } else {
         run_console(args).await
     }
@@ -447,6 +457,77 @@ extern "system" fn service_control_handler(
     }
 }
 
+// ── IFEO Launcher mode (Fase 2) ──────────────────────────────────
+
+/// Entry point for the IFEO Debugger launcher.
+///
+/// NT calls this binary instead of the agent executable when IFEO
+/// is configured. The first argument after the binary name is the
+/// full path of the original executable to sandbox.
+///
+/// Flow:
+/// 1. Parse command line to get the original exe path
+/// 2. Detect privilege level (admin → AppContainer, user → Low IL)
+/// 3. Launch the agent inside the appropriate sandbox
+/// 4. Wait for the agent process to exit
+fn run_launcher() -> Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+
+    // Skip argv[0] (binary path) and argv[1] (--launcher flag).
+    // The original exe path from IFEO comes after --launcher.
+    if args.len() < 3 {
+        eprintln!("agentguard-windows --launcher: missing original executable path");
+        eprintln!("Usage: agentguard-windows --launcher <original-exe-path> [args...]");
+        std::process::exit(1);
+    }
+
+    let original_exe = &args[2];
+    let original_args: Vec<String> = args.iter().skip(3).cloned().collect();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+
+    info!(
+        original_exe = %original_exe,
+        args_count = original_args.len(),
+        "IFEO launcher: intercepting agent process"
+    );
+
+    // Determine sandbox type based on privilege level
+    let is_admin = crate::launcher::is_admin();
+    let proxy_port = 7771u16; // Default DLP proxy port
+
+    if is_admin {
+        // Admin: use AppContainer sandbox (stronger isolation)
+        info!("Admin detected — using AppContainer sandbox");
+        let launcher = crate::sandbox::SandboxLauncher::new(Config::default());
+        let rt = tokio::runtime::Runtime::new()?;
+        rt.block_on(launcher.launch(original_exe, &cwd, true))
+            .with_context(|| format!("AppContainer sandbox launch for {original_exe}"))?;
+    } else {
+        // Non-admin: use Low IL sandbox
+        info!("Non-admin — using Low IL sandbox");
+        let result = crate::launcher::launch_low_il(original_exe, &original_args, &cwd, proxy_port);
+        match result {
+            Ok(sandboxed) => {
+                info!(pid = sandboxed.pid, "Low IL sandbox process launched");
+            }
+            Err(e) => {
+                // If Low IL fails, try direct launch as last resort
+                warn!(
+                    error = %e,
+                    "Low IL sandbox failed — launching agent directly (monitor mode)"
+                );
+                std::process::Command::new(original_exe)
+                    .args(&original_args)
+                    .current_dir(&cwd)
+                    .spawn()
+                    .with_context(|| format!("direct launch for {original_exe}"))?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 // ── Daemon core (compartido entre modo consola y servicio) ─────
 
 async fn run_daemon(args: Args, shutdown: Arc<AtomicBool>) -> Result<()> {
@@ -523,6 +604,21 @@ async fn run_daemon(args: Args, shutdown: Arc<AtomicBool>) -> Result<()> {
             error!(error = %e, "protection backend crashed");
         }
     });
+
+    // ── Auto-heal watcher (displacement protection) ──────────
+    #[cfg(windows)]
+    {
+        let db = crate::displacement::DisplacementDb::load_or_create();
+        let entries_count = db.entries.len();
+        if entries_count > 0 {
+            info!(
+                displaced = entries_count,
+                "Windows auto-heal watcher: detected displaced binaries"
+            );
+            // The auto-heal logic runs in the guard's notify watcher
+            // which already watches protected directories via ReadDirectoryChangesW.
+        }
+    }
 
     // ── DLP proxy ───────────────────────────────────────────
     let dlp_handle = if config.dlp.enabled {

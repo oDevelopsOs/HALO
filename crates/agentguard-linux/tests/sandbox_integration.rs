@@ -28,7 +28,7 @@ mod sandbox_tests {
         let config = make_test_config(tmp.path());
         let launcher = SandboxLauncher::new(config);
 
-        let pid = launcher.launch("echo", tmp.path(), false).await;
+        let pid = launcher.launch("echo", tmp.path(), false, false).await;
         assert!(pid.is_ok(), "sandbox launch failed: {:?}", pid.err());
 
         let pid = pid.unwrap();
@@ -52,7 +52,7 @@ mod sandbox_tests {
         let launcher = SandboxLauncher::new(config);
 
         // Lanzar 'echo' en el sandbox — verifica que bwrap funciona y no explota
-        let pid = launcher.launch("echo", project.path(), false).await;
+        let pid = launcher.launch("echo", project.path(), false, false).await;
         assert!(pid.is_ok(), "sandbox should launch echo: {:?}", pid.err());
 
         sleep(Duration::from_millis(500)).await;

@@ -205,7 +205,11 @@ async fn handle_agent_spawn(
             kill_process(pid);
 
             let sandbox = SandboxLauncher::new(cfg.clone());
-            match sandbox.launch(&exe, &cwd, mode == "hybrid").await {
+            let network_iso = cfg.sandbox.network_isolation;
+            match sandbox
+                .launch(&exe, &cwd, mode == "hybrid", network_iso)
+                .await
+            {
                 Ok(sandbox_pid) => {
                     info!(
                         agent = %comm,

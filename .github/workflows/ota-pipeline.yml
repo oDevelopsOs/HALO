@@ -1,0 +1,101 @@
+name: OTA Profile Update
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * *'
+  repository_dispatch:
+    types: [telemetry-batch]
+
+concurrency:
+  group: ota-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze-agents:
+    name: analyze (${{ matrix.agent }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        agent:
+          - claude-code
+          - cursor
+          - windsurf
+          - opencode
+          - aider
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install agent
+        run: |
+          case "${{ matrix.agent }}" in
+            claude-code|cursor|windsurf|opencode)
+              npm install -g "@anthropic-ai/claude-code" 2>/dev/null || true
+              ;;
+            aider)
+              pip install aider-chat 2>/dev/null || true
+              ;;
+          esac
+
+      - name: Trace syscalls with strace
+        run: |
+          mkdir -p /tmp/strace-output
+          case "${{ matrix.agent }}" in
+            claude-code) AGENT_BIN="claude" ;;
+            *) AGENT_BIN="${{ matrix.agent }}" ;;
+          esac
+          # Run agent with --help and capture syscalls
+          timeout 30 strace -f -e trace=%file,%process,%network \
+            -o "/tmp/strace-output/${{ matrix.agent }}.log" \
+            $AGENT_BIN --help 2>/dev/null || true
+
+      - name: Extract new syscalls from strace output
+        run: |
+          bash scripts/extract-syscalls.sh \
+            "/tmp/strace-output/${{ matrix.agent }}.log" \
+            "profiles/${{ matrix.agent }}.json"
+
+      - name: Sign updated profile
+        env:
+          OTA_SIGNING_KEY: ${{ secrets.OTA_SIGNING_KEY }}
+        run: |
+          if [ -n "$OTA_SIGNING_KEY" ]; then
+            echo "$OTA_SIGNING_KEY" | base64 -d > /tmp/ota-signing.key 2>/dev/null || true
+            bash scripts/sign-profile.sh "profiles/${{ matrix.agent }}.json" /tmp/ota-signing.key
+          else
+            echo "SKIP: OTA_SIGNING_KEY secret not configured — signature skipped"
+          fi
+
+      - name: Upload profile artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: profiles-${{ matrix.agent }}
+          path: |
+            profiles/${{ matrix.agent }}.json
+            profiles/${{ matrix.agent }}.sig
+          retention-days: 7
+
+  publish:
+    name: publish
+    needs: analyze-agents
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all profiles
+        uses: actions/download-artifact@v4
+        with:
+          pattern: profiles-*
+          path: profiles/
+          merge-multiple: true
+
+      - name: Publish to CDN
+        run: |
+          echo "Profiles ready for CDN upload:"
+          ls -la profiles/
+          echo ""
+          echo "To publish, configure AWS credentials or CDN upload:"
+          echo "  aws s3 cp profiles/ s3://cdn.agentguard.io/profiles/ --recursive"
+          echo "  aws cloudfront create-invalidation --distribution-id \$CDN_DIST --paths '/profiles/*'"
