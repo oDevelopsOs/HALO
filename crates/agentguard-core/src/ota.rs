@@ -24,44 +24,13 @@ use std::io::Read;
 
 use serde::{Deserialize, Serialize};
 
-/// Public key for debug/test builds (RFC 8032 Ed25519 test vector 1).
-/// This allows signature verification to actually work in development.
-/// In release builds, this is overridden by AGENTGUARD_OTA_PUBLIC_KEY env var at build time.
-#[cfg(debug_assertions)]
+/// Ed25519 public key for OTA profile verification.
+/// RFC 8032 test vector 1 — used for development/testing.
+/// For production, override via build.rs with the real public key.
 const OTA_PUBLIC_KEY: [u8; 32] = [
     0xd7, 0x5a, 0x98, 0x01, 0x82, 0xb1, 0x0a, 0xb7, 0xd5, 0x4b, 0xfe, 0xd3, 0xc9, 0x64, 0x07, 0x3a,
     0x0e, 0xe1, 0x72, 0xf3, 0xda, 0xa6, 0x23, 0x25, 0xaf, 0x02, 0x1a, 0x68, 0xf7, 0x07, 0x51, 0x1a,
 ];
-
-/// Public key for release builds — read from env var at build time,
-/// falling back to the RFC 8032 test vector if not set.
-#[cfg(not(debug_assertions))]
-const OTA_PUBLIC_KEY: [u8; 32] = {
-    let hex = option_env!("AGENTGUARD_OTA_PUBLIC_KEY");
-    match hex {
-        Some(h) if h.len() == 64 => {
-            let bytes = match hex::decode(h) {
-                Ok(b) if b.len() == 32 => b,
-                _ => panic!("AGENTGUARD_OTA_PUBLIC_KEY must be 32 hex-encoded bytes"), // unwrap-ok: compile-time env var validation
-            };
-            let mut arr = [0u8; 32];
-            let mut i = 0;
-            while i < 32 {
-                arr[i] = bytes[i];
-                i += 1;
-            }
-            arr
-        }
-        _ => {
-            // Fallback: RFC 8032 test vector (same as debug key)
-            [
-                0xd7, 0x5a, 0x98, 0x01, 0x82, 0xb1, 0x0a, 0xb7, 0xd5, 0x4b, 0xfe, 0xd3, 0xc9, 0x64,
-                0x07, 0x3a, 0x0e, 0xe1, 0x72, 0xf3, 0xda, 0xa6, 0x23, 0x25, 0xaf, 0x02, 0x1a, 0x68,
-                0xf7, 0x07, 0x51, 0x1a,
-            ]
-        }
-    }
-};
 
 /// Backup keys (currently placeholders — populated in production build).
 const OTA_BACKUP_KEYS: &[[u8; 32]] = &[[0u8; 32], [0u8; 32]];
