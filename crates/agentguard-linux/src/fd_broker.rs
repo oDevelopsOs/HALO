@@ -404,7 +404,6 @@ fn send_fd(socket_fd: RawFd, fd_to_send: RawFd) -> Result<(), anyhow::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     #[test]
     fn test_broker_request_parse() {

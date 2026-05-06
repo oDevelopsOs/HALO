@@ -42,7 +42,7 @@ const OTA_PUBLIC_KEY: [u8; 32] = {
         Some(h) if h.len() == 64 => {
             let bytes = match hex::decode(h) {
                 Ok(b) if b.len() == 32 => b,
-                _ => panic!("AGENTGUARD_OTA_PUBLIC_KEY must be 32 hex-encoded bytes"),
+                _ => panic!("AGENTGUARD_OTA_PUBLIC_KEY must be 32 hex-encoded bytes"), // unwrap-ok: compile-time env var validation
             };
             let mut arr = [0u8; 32];
             let mut i = 0;

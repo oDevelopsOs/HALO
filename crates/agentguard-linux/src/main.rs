@@ -559,7 +559,7 @@ async fn main() -> Result<()> {
             // Create a dummy signal stream that never fires
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::alarm()).unwrap_or_else(
                 |_| {
-                    panic!("cannot create dummy signal");
+                    panic!("cannot create dummy signal"); // unwrap-ok: both SIGHUP and SIGALRM unavailable — cannot continue
                 },
             )
         }

@@ -132,7 +132,7 @@ fn main() {
     // ── 1. Check if already sandboxed ──
     if std::env::var("AGENTGUARD_SANDBOXED").is_ok() {
         exec_real();
-        unreachable!();
+        unreachable!(); // unwrap-ok: exec_real calls execvp which never returns on success
     }
 
     // ── 2. Try USER_NOTIF seccomp (before Landlock — needs socket access) ──
@@ -162,7 +162,7 @@ fn main() {
 
     // ── 4. Exec the real binary ──
     exec_real();
-    unreachable!();
+    unreachable!(); // unwrap-ok: exec_real calls execvp which never returns on success
 }
 
 // ── Config helpers ──────────────────────────────────────────────
