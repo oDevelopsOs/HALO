@@ -51,22 +51,41 @@ pub fn render_status_bar(f: &mut Frame, state: &AppState, area: Rect) {
 
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .constraints([
+            Constraint::Percentage(30),
+            Constraint::Percentage(40),
+            Constraint::Percentage(30),
+        ])
         .split(area);
 
+    // Left: daemon status
     let left = if state.daemon.connected {
         let paused = if state.daemon.paused { " [PAUSED]" } else { "" };
         format!(
-            " AG v{} | {} ({}){paused} | h help | q quit",
+            " AG v{} | {} ({}){paused}",
             state.daemon.version, state.daemon.guard_backend, state.daemon.protection_level,
         )
     } else {
-        " Daemon disconnected - retrying...".to_string()
+        " ⚠ Daemon disconnected — retrying...".to_string()
     };
     f.render_widget(Paragraph::new(left).style(theme::muted_style()), chunks[0]);
 
+    // Center: always-visible key hints
+    let center = if state.filter_active {
+        format!(" Filter: {} │ Enter=apply Esc=clear", state.filter_text)
+    } else {
+        " 1-6 tabs │ r refresh │ f filter │ p pause │ q quit ".to_string()
+    };
+    f.render_widget(
+        Paragraph::new(center)
+            .style(theme::title_style())
+            .alignment(Alignment::Center),
+        chunks[1],
+    );
+
+    // Right: status/error messages
     let right = if let Some(ref err) = state.error_message {
-        format!(" ERROR: {err} ")
+        format!(" {err} ")
     } else if let Some(ref msg) = state.status_message {
         format!(" {msg} ")
     } else {
@@ -81,6 +100,6 @@ pub fn render_status_bar(f: &mut Frame, state: &AppState, area: Rect) {
         Paragraph::new(right)
             .style(style)
             .alignment(Alignment::Right),
-        chunks[1],
+        chunks[2],
     );
 }
