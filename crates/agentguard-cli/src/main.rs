@@ -289,6 +289,31 @@ enum Command {
         #[arg(long)]
         check_only: bool,
     },
+
+    /// Fase 5: List tracked AI agents and their statistics
+    Agents {
+        #[arg(long)]
+        show: Option<String>,
+    },
+
+    /// Fase 5: Manage protection rules
+    #[command(subcommand)]
+    Rules(RulesCmd),
+
+    /// Fase 5: Show protection statistics
+    Stats,
+}
+
+#[derive(Subcommand)]
+enum RulesCmd {
+    /// Add paths to protection list
+    Add {
+        paths: Vec<String>,
+        #[arg(long)]
+        watch_only: bool,
+    },
+    /// List all protection rules
+    List,
 }
 
 #[derive(Subcommand)]
@@ -357,7 +382,16 @@ fn build_command(cmd: Command) -> IpcCommand {
             extra_args: args,
             mode_override: mode,
         },
-        Command::Check | Command::Setup | Command::Update { .. } | Command::Init { .. } => {
+        // Fase 5
+        Command::Agents { show: Some(name) } => IpcCommand::AgentsShow { name },
+        Command::Agents { show: None } => IpcCommand::AgentsList,
+        Command::Rules(RulesCmd::List) => IpcCommand::RulesList,
+        Command::Stats => IpcCommand::Stats,
+        Command::Rules(RulesCmd::Add { .. })
+        | Command::Check
+        | Command::Setup
+        | Command::Update { .. }
+        | Command::Init { .. } => {
             unreachable!("build_command called with local-only command") // unwrap-ok: filtered before IPC
         }
     }
@@ -529,6 +563,10 @@ fn format_response(response: IpcResponse) {
                 "  {}",
                 green(&format!("Agent launched in sandbox (pid={sandbox_pid})"))
             );
+        }
+        // Fase 5: new IPC responses (for agents/rules/stats commands)
+        _other => {
+            eprintln!("{} protocol v2 response — update CLI", yellow("⚠"));
         }
     }
 }
@@ -867,6 +905,33 @@ fn handle_update(check_only: bool) -> Result<()> {
     Ok(())
 }
 
+/// Fase 5: Bulk-add protection rules via IPC.
+fn handle_rules_add(paths: &[String]) -> Result<()> {
+    let socket_path = std::env::var("AGENTGUARD_SOCKET")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(default_socket_path);
+    let mut stream = connect(&socket_path)?;
+
+    for path in paths {
+        let cmd = IpcCommand::AddProtectedPath { path: path.clone() };
+        let json = serde_json::to_string(&cmd)?;
+        writeln!(stream, "{json}")?;
+        stream.flush()?;
+
+        let mut reader = BufReader::new(&mut stream);
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        let resp: IpcResponse = serde_json::from_str(line.trim())?;
+        match resp {
+            IpcResponse::Ok { message } => println!("  {} {}", green("✓"), message),
+            IpcResponse::Error { message } => eprintln!("  {} {}: {}", red("✗"), path, message),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 // ── Main ───────────────────────────────────────────────────
 
 fn main() -> Result<()> {
@@ -875,13 +940,18 @@ fn main() -> Result<()> {
     // Init, Setup, Update and Check are handled locally (no IPC needed)
     if matches!(
         cli.command,
-        Command::Init { .. } | Command::Setup | Command::Check | Command::Update { .. }
+        Command::Init { .. }
+            | Command::Setup
+            | Command::Check
+            | Command::Update { .. }
+            | Command::Rules(RulesCmd::Add { .. })
     ) {
         match cli.command {
             Command::Init { output, defaults } => return handle_init(output, defaults),
             Command::Setup => return handle_setup(),
             Command::Check => return handle_check(),
             Command::Update { check_only } => return handle_update(check_only),
+            Command::Rules(RulesCmd::Add { paths, .. }) => return handle_rules_add(&paths),
             _ => unreachable!(), // unwrap-ok: guarded by outer matches!
         }
     }

@@ -9,7 +9,7 @@
 /// Versión del protocolo IPC entre daemon, CLI y UI.
 ///
 /// Bumpear en cada cambio breaking del enum `IpcCommand` / `IpcResponse`.
-pub const IPC_PROTOCOL_VERSION: u32 = 1;
+pub const IPC_PROTOCOL_VERSION: u32 = 2;
 
 /// Ruta por defecto del socket IPC (Unix / Linux).
 pub const IPC_SOCKET_PATH: &str = ".agentguard/agentguard.sock";
@@ -256,6 +256,27 @@ mod ipc {
         },
         /// Añadir ruta protegida en runtime (v2.1).
         AddProtectedPath { path: std::string::String },
+        /// Fase 5: Listar todos los agentes conocidos.
+        AgentsList,
+        /// Fase 5: Mostrar detalle de un agente.
+        AgentsShow { name: std::string::String },
+        /// Fase 5: Listar reglas de protección.
+        RulesList,
+        /// Fase 5: Estadísticas de incidentes.
+        Stats,
+        /// Fase 5: Incidencias con filtros.
+        IncidentsFilter {
+            #[serde(default)]
+            kind: Option<std::string::String>,
+            #[serde(default)]
+            agent_name: Option<std::string::String>,
+            #[serde(default)]
+            from_ts: Option<i64>,
+            #[serde(default)]
+            to_ts: Option<i64>,
+            #[serde(default)]
+            limit: Option<u32>,
+        },
     }
 
     fn default_label() -> std::string::String {
@@ -307,6 +328,21 @@ mod ipc {
         Pong,
         /// v2.1: agente lanzado en sandbox.
         AgentLaunched { sandbox_pid: u32 },
+        /// Fase 5: lista de agentes con estadísticas.
+        AgentsList { agents: std::vec::Vec<AgentInfo> },
+        /// Fase 5: detalle de un agente.
+        AgentsShow {
+            agent: AgentInfo,
+            sessions: std::vec::Vec<SessionInfo>,
+        },
+        /// Fase 5: reglas de protección.
+        RulesList { rules: std::vec::Vec<RuleInfo> },
+        /// Fase 5: estadísticas de incidentes.
+        StatsData {
+            total_incidents: u64,
+            violations_24h: u64,
+            agents_tracked: u64,
+        },
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -328,7 +364,43 @@ mod ipc {
         pub mode: SandboxMode,
         pub started_at: u64,
     }
+
+    /// Fase 5: Información de un agente (del SQLite db).
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct AgentInfo {
+        pub agent_name: std::string::String,
+        pub first_seen: i64,
+        pub last_seen: i64,
+        pub total_sessions: i64,
+        pub total_violations: i64,
+        pub total_sandbox_seconds: i64,
+    }
+
+    /// Fase 5: Información de una sesión de agente.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct SessionInfo {
+        pub id: std::string::String,
+        pub agent_name: std::string::String,
+        pub pid: Option<i64>,
+        pub sandbox_mode: Option<std::string::String>,
+        pub started_at: i64,
+        pub ended_at: Option<i64>,
+        pub total_seconds: Option<i64>,
+        pub violation_count: Option<i64>,
+    }
+
+    /// Fase 5: Información de una regla de protección.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct RuleInfo {
+        pub path: std::string::String,
+        pub kind: std::string::String,
+        pub added_at: i64,
+        pub watch_only: bool,
+    }
 }
 
 #[cfg(feature = "std")]
-pub use ipc::{IpcCommand, IpcResponse, SandboxMode, SandboxedAgent, SnapshotInfo};
+pub use ipc::{
+    AgentInfo, IpcCommand, IpcResponse, RuleInfo, SandboxMode, SandboxedAgent, SessionInfo,
+    SnapshotInfo,
+};

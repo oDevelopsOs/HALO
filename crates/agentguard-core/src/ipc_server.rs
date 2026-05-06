@@ -10,7 +10,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-use agentguard_common::{IpcCommand, IpcResponse, SandboxedAgent, SnapshotInfo};
+use agentguard_common::{
+    AgentInfo, IpcCommand, IpcResponse, RuleInfo, SandboxedAgent, SessionInfo, SnapshotInfo,
+};
 use serde_json;
 use tokio::sync::oneshot;
 
@@ -59,6 +61,8 @@ pub struct IpcServer {
     active_sandboxes: Arc<RwLock<Vec<SandboxedAgent>>>,
     /// v2.1: incidents counter.
     incidents_count: Arc<AtomicU64>,
+    /// Fase 5: database handle.
+    db: Option<Arc<crate::db::Database>>,
 }
 
 impl IpcServer {
@@ -91,6 +95,7 @@ impl IpcServer {
             capabilities: String::new(),
             active_sandboxes: Arc::new(RwLock::new(Vec::new())),
             incidents_count: Arc::new(AtomicU64::new(0)),
+            db: None,
         }
     }
 
@@ -479,6 +484,156 @@ impl IpcServer {
                     message: format!("path {path} is now protected"),
                 }
             }
+            // ── Fase 5: Agent queries ──
+            IpcCommand::AgentsList => match &self.db {
+                Some(db) => match db.list_agent_stats() {
+                    Ok(stats) => {
+                        let agents: Vec<AgentInfo> = stats
+                            .into_iter()
+                            .map(|s| AgentInfo {
+                                agent_name: s.agent_name,
+                                first_seen: s.first_seen,
+                                last_seen: s.last_seen,
+                                total_sessions: s.total_sessions,
+                                total_violations: s.total_violations,
+                                total_sandbox_seconds: s.total_sandbox_seconds,
+                            })
+                            .collect();
+                        IpcResponse::AgentsList { agents }
+                    }
+                    Err(e) => IpcResponse::Error {
+                        message: e.to_string(),
+                    },
+                },
+                None => IpcResponse::Error {
+                    message: "database not available".into(),
+                },
+            },
+            IpcCommand::AgentsShow { name } => match &self.db {
+                Some(db) => {
+                    let agent = db.get_agent_stats(&name).unwrap_or(None);
+                    let sessions = db
+                        .list_agent_sessions(50)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|s| s.agent_name == name)
+                        .map(|s| SessionInfo {
+                            id: s.id,
+                            agent_name: s.agent_name,
+                            pid: s.pid,
+                            sandbox_mode: s.sandbox_mode,
+                            started_at: s.started_at,
+                            ended_at: s.ended_at,
+                            total_seconds: s.total_seconds,
+                            violation_count: s.violation_count,
+                        })
+                        .collect();
+                    match agent {
+                        Some(a) => IpcResponse::AgentsShow {
+                            agent: AgentInfo {
+                                agent_name: a.agent_name,
+                                first_seen: a.first_seen,
+                                last_seen: a.last_seen,
+                                total_sessions: a.total_sessions,
+                                total_violations: a.total_violations,
+                                total_sandbox_seconds: a.total_sandbox_seconds,
+                            },
+                            sessions,
+                        },
+                        None => IpcResponse::Error {
+                            message: format!("agent '{}' not found", name),
+                        },
+                    }
+                }
+                None => IpcResponse::Error {
+                    message: "database not available".into(),
+                },
+            },
+            IpcCommand::RulesList => match &self.db {
+                Some(db) => match db.list_rules() {
+                    Ok(rules) => {
+                        let rules: Vec<RuleInfo> = rules
+                            .into_iter()
+                            .map(|r| RuleInfo {
+                                path: r.path,
+                                kind: r.kind,
+                                added_at: r.added_at,
+                                watch_only: r.watch_only,
+                            })
+                            .collect();
+                        IpcResponse::RulesList { rules }
+                    }
+                    Err(e) => IpcResponse::Error {
+                        message: e.to_string(),
+                    },
+                },
+                None => IpcResponse::Error {
+                    message: "database not available".into(),
+                },
+            },
+            IpcCommand::Stats => {
+                let violations_24h = self
+                    .db
+                    .as_ref()
+                    .and_then(|db| db.count_incidents_since(86400).ok())
+                    .unwrap_or(0);
+                let agents_tracked = self
+                    .db
+                    .as_ref()
+                    .and_then(|db| db.list_agent_stats().ok())
+                    .map(|a| a.len() as u64)
+                    .unwrap_or(0);
+                IpcResponse::StatsData {
+                    total_incidents: self.incidents_count.load(Ordering::SeqCst),
+                    violations_24h,
+                    agents_tracked,
+                }
+            }
+            IpcCommand::IncidentsFilter {
+                kind,
+                agent_name,
+                from_ts,
+                to_ts,
+                limit,
+            } => {
+                match &self.db {
+                    Some(db) => {
+                        let filter = crate::db::IncidentFilter {
+                            kind: kind.clone(),
+                            agent_name: agent_name.clone(),
+                            from_timestamp: from_ts,
+                            to_timestamp: to_ts,
+                            limit: limit.or(Some(100)),
+                        };
+                        match db.query_incidents(&filter) {
+                            Ok(records) => {
+                                let lines: Vec<String> = records
+                                    .into_iter()
+                                    .map(|r| {
+                                        serde_json::to_string(&serde_json::json!({
+                                            "kind": r.kind,
+                                            "agent_name": r.agent_name,
+                                            "timestamp": r.timestamp,
+                                            "path": r.path,
+                                            "violation": r.violation,
+                                            "process": r.process,
+                                        }))
+                                        .unwrap_or_default()
+                                    })
+                                    .collect();
+                                IpcResponse::Incidents { lines }
+                            }
+                            Err(e) => IpcResponse::Error {
+                                message: e.to_string(),
+                            },
+                        }
+                    }
+                    None => {
+                        // Fallback: read from JSONL log
+                        IpcResponse::Error { message: "database not available — use 'agentguard incidents' for legacy access".into() }
+                    }
+                }
+            }
         }
     }
 }
@@ -633,6 +788,8 @@ pub struct IpcServerBuilder {
     capabilities: String,
     active_sandboxes: Arc<RwLock<Vec<SandboxedAgent>>>,
     incidents_count: Arc<AtomicU64>,
+    /// Fase 5
+    db: Option<Arc<crate::db::Database>>,
 }
 
 impl IpcServerBuilder {
@@ -676,6 +833,12 @@ impl IpcServerBuilder {
         self
     }
 
+    /// Fase 5: attach database handle.
+    pub fn database(mut self, db: Arc<crate::db::Database>) -> Self {
+        self.db = Some(db);
+        self
+    }
+
     pub fn build(self) -> Result<IpcServer, std::io::Error> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -693,6 +856,7 @@ impl IpcServerBuilder {
             capabilities: self.capabilities,
             active_sandboxes: self.active_sandboxes,
             incidents_count: self.incidents_count,
+            db: self.db,
         })
     }
 }
