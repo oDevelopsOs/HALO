@@ -5,6 +5,7 @@
 
 pub mod ca;
 pub mod config;
+pub mod db;
 pub mod dlp;
 pub mod events;
 pub mod guard;

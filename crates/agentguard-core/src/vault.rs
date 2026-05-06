@@ -142,7 +142,15 @@ impl Vault {
 
                 let stored_path = snapshot_dir.join(&hash);
                 if !already_written.contains(&hash) {
-                    fs::write(&stored_path, &content)
+                    // Fase 5: compress with zstd for reduced disk usage
+                    let compressed = zstd::stream::encode_all(&content[..], 3)
+                        .unwrap_or_else(|_| content.clone());
+                    let to_store: &[u8] = if compressed.len() < content.len() {
+                        &compressed
+                    } else {
+                        &content
+                    };
+                    fs::write(&stored_path, to_store)
                         .await
                         .map_err(|source| VaultError::Io {
                             path: stored_path.clone(),
@@ -194,7 +202,7 @@ impl Vault {
 
         for file_entry in &snapshot.files {
             let stored = snapshot_dir.join(&file_entry.hash);
-            let content = match fs::read(&stored).await {
+            let raw_content = match fs::read(&stored).await {
                 Ok(c) => c,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     return Err(VaultError::MissingBlob {
@@ -208,6 +216,15 @@ impl Vault {
                         source,
                     });
                 }
+            };
+
+            // Fase 5: try zstd decompression, fall back to raw if uncompressed
+            let content = if raw_content.len() >= 4 && raw_content[0..4] == [0x28, 0xB5, 0x2F, 0xFD]
+            {
+                // zstd magic bytes detected → decompress
+                zstd::stream::decode_all(&raw_content[..]).unwrap_or(raw_content)
+            } else {
+                raw_content
             };
 
             if let Some(parent) = file_entry.original_path.parent() {
