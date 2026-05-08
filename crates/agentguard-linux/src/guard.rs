@@ -3,6 +3,8 @@
 //! más la función `select_guard` que elige uno en runtime.
 
 pub mod userspace;
+
+#[cfg(target_os = "linux")]
 pub mod fanotify;
 
 pub mod agents;
@@ -89,21 +91,28 @@ pub async fn select_guard(
     }
 
     // ── Fallback: fanotify with FAN_DENY (blocks write-opens) ──
-    match fanotify::FanotifyGuard::new(protected_paths) {
-        Ok(guard) => {
-            tracing::info!(
-                backend = "fanotify",
-                paths = protected_paths.len(),
-                "using fanotify userspace guard — blocking write-opens on protected paths"
-            );
-            return Ok(Box::new(guard));
+    #[cfg(target_os = "linux")]
+    {
+        match fanotify::FanotifyGuard::new(protected_paths) {
+            Ok(guard) => {
+                tracing::info!(
+                    backend = "fanotify",
+                    paths = protected_paths.len(),
+                    "using fanotify userspace guard — blocking write-opens on protected paths"
+                );
+                return Ok(Box::new(guard));
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "fanotify unavailable — falling back to inotify (observation-only)"
+                );
+            }
         }
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                "fanotify unavailable — falling back to inotify (observation-only)"
-            );
-        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = protected_files;
     }
 
     // ── Last resort: inotify observation-only ──
