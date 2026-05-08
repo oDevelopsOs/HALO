@@ -753,9 +753,26 @@ pub fn resolve_real_user_home() -> Option<PathBuf> {
         }
     }
 
-    // Usuarios con UID >= 1000 en /etc/passwd (el primero con home válido)
+    // When NOT running as root, dirs::home_dir() is already correct:
+    // it reads $HOME which the shell sets to the real user's dir.
+    // Only when running as root (e.g. under systemd) does it return
+    // /root, and in that case we fall through to the /etc/passwd scan.
+    #[cfg(unix)]
+    let is_root = nix::unistd::Uid::effective().is_root();
+    #[cfg(not(unix))]
+    let is_root = false;
+
+    if !is_root {
+        if let Some(home) = dirs::home_dir() {
+            tracing::debug!("Resolved home via dirs::home_dir() (non-root): {:?}", home);
+            return Some(home);
+        }
+    }
+
+    // Running as root: dirs::home_dir() → /root, which is wrong.
+    // Scan /etc/passwd for the first human user.
     if let Some(home) = first_human_user_home() {
-        tracing::info!("Resolved home via /etc/passwd scan: {:?}", home);
+        tracing::info!("Resolved home via /etc/passwd scan (root): {:?}", home);
         return Some(home);
     }
 
