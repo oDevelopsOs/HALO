@@ -43,10 +43,10 @@ use nix::sys::fanotify::{
 
 // ─── POSIX open flags for write-detection ────────────────────────────────
 const O_ACCMODE: i32 = 0o0003;
-const O_WRONLY:  i32 = 0o0001;
-const O_RDWR:    i32 = 0o0002;
-const O_CREAT:   i32 = 0o0100;
-const O_TRUNC:   i32 = 0o1000;
+const O_WRONLY: i32 = 0o0001;
+const O_RDWR: i32 = 0o0002;
+const O_CREAT: i32 = 0o0100;
+const O_TRUNC: i32 = 0o1000;
 
 /// Guard that uses fanotify to **block** write-opens on protected paths.
 ///
@@ -113,9 +113,8 @@ impl KernelGuard for FanotifyGuard {
             .map_err(|e| GuardError::Internal(format!("fanotify_init: {e}")))?;
 
         // Mark each protected path for open-permission and close-write events.
-        let perm_mask = MaskFlags::FAN_OPEN_PERM
-            | MaskFlags::FAN_CLOSE_WRITE
-            | MaskFlags::FAN_ONDIR;
+        let perm_mask =
+            MaskFlags::FAN_OPEN_PERM | MaskFlags::FAN_CLOSE_WRITE | MaskFlags::FAN_ONDIR;
 
         let mark_flags = MarkFlags::FAN_MARK_ADD;
 
@@ -205,9 +204,9 @@ fn fanotify_event_loop(
     out_tx: broadcast::Sender<SecurityEvent>,
 ) -> Result<(), GuardError> {
     loop {
-        let events = fan.read_events().map_err(|e| {
-            GuardError::Internal(format!("fanotify read_events: {e}"))
-        })?;
+        let events = fan
+            .read_events()
+            .map_err(|e| GuardError::Internal(format!("fanotify read_events: {e}")))?;
 
         for ev in events {
             let mask = ev.mask();
@@ -270,9 +269,7 @@ fn fanotify_event_loop(
 
             // ── NOTIFICATION events (post-hoc, cannot block) ──
             if mask.intersects(
-                MaskFlags::FAN_CLOSE_WRITE
-                    | MaskFlags::FAN_DELETE
-                    | MaskFlags::FAN_DELETE_SELF,
+                MaskFlags::FAN_CLOSE_WRITE | MaskFlags::FAN_DELETE | MaskFlags::FAN_DELETE_SELF,
             ) {
                 if let Some(fd) = ev.fd() {
                     let fd_path = canonicalize_fd(fd);
@@ -318,27 +315,21 @@ mod tests {
 
     #[test]
     fn is_under_exact_match() {
-        let paths: HashSet<PathBuf> = [PathBuf::from("/tmp/protected")]
-            .into_iter()
-            .collect();
+        let paths: HashSet<PathBuf> = [PathBuf::from("/tmp/protected")].into_iter().collect();
         assert!(is_under(&paths, Path::new("/tmp/protected")));
         assert!(!is_under(&paths, Path::new("/tmp/other")));
     }
 
     #[test]
     fn is_under_child_match() {
-        let paths: HashSet<PathBuf> = [PathBuf::from("/tmp/protected")]
-            .into_iter()
-            .collect();
+        let paths: HashSet<PathBuf> = [PathBuf::from("/tmp/protected")].into_iter().collect();
         assert!(is_under(&paths, Path::new("/tmp/protected/sub/file.txt")));
     }
 
     #[test]
     fn is_under_no_partial_match() {
         // "/tmp/pro" must not match "/tmp/protected" (partial prefix ≠ ancestor)
-        let paths: HashSet<PathBuf> = [PathBuf::from("/tmp/pro")]
-            .into_iter()
-            .collect();
+        let paths: HashSet<PathBuf> = [PathBuf::from("/tmp/pro")].into_iter().collect();
         assert!(!is_under(&paths, Path::new("/tmp/protected/file.txt")));
     }
 

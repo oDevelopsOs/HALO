@@ -309,9 +309,10 @@ pub fn detect_ca_trust_method() -> CaTrustMethod {
 #[cfg(unix)]
 fn run_command(cmd: &str, args: &[&str]) -> Result<(), CaError> {
     use std::process::Command;
-    let status = Command::new(cmd).args(args).status().map_err(|e| {
-        CaError::TrustInstall(format!("failed to spawn `{cmd}`: {e}"))
-    })?;
+    let status = Command::new(cmd)
+        .args(args)
+        .status()
+        .map_err(|e| CaError::TrustInstall(format!("failed to spawn `{cmd}`: {e}")))?;
     if !status.success() {
         return Err(CaError::TrustInstall(format!(
             "`{cmd} {}` exited with {}",
@@ -329,9 +330,8 @@ fn run_command(cmd: &str, args: &[&str]) -> Result<(), CaError> {
 fn write_anchor(path: &Path, pem: &[u8]) -> Result<(), CaError> {
     use std::os::unix::fs::PermissionsExt;
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            CaError::TrustInstall(format!("create_dir_all {:?}: {e}", parent))
-        })?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| CaError::TrustInstall(format!("create_dir_all {:?}: {e}", parent)))?;
     }
     std::fs::write(path, pem)
         .map_err(|e| CaError::TrustInstall(format!("write {:?}: {e}", path)))?;
@@ -347,8 +347,8 @@ fn install_trust_with_method(
 ) -> Result<TrustInstallReport, CaError> {
     match method {
         CaTrustMethod::UpdateCaCertificates => {
-            let path = PathBuf::from("/usr/local/share/ca-certificates")
-                .join(SYSTEM_TRUST_ANCHOR_FILE);
+            let path =
+                PathBuf::from("/usr/local/share/ca-certificates").join(SYSTEM_TRUST_ANCHOR_FILE);
             write_anchor(&path, pem)?;
             run_command("update-ca-certificates", &[])?;
             tracing::info!(?path, "CA installed via update-ca-certificates");
@@ -359,8 +359,8 @@ fn install_trust_with_method(
             })
         }
         CaTrustMethod::UpdateCaTrust => {
-            let path = PathBuf::from("/etc/pki/ca-trust/source/anchors")
-                .join(SYSTEM_TRUST_ANCHOR_FILE);
+            let path =
+                PathBuf::from("/etc/pki/ca-trust/source/anchors").join(SYSTEM_TRUST_ANCHOR_FILE);
             write_anchor(&path, pem)?;
             run_command("update-ca-trust", &["extract"])?;
             tracing::info!(?path, "CA installed via update-ca-trust");
@@ -650,8 +650,11 @@ mod tests {
         let tmp = TempDir::new().expect("tempdir");
         let path = tmp.path().join("nested/dir/agentguard-ca.crt");
 
-        write_anchor(&path, b"-----BEGIN CERTIFICATE-----\nfoo\n-----END CERTIFICATE-----\n")
-            .expect("write_anchor");
+        write_anchor(
+            &path,
+            b"-----BEGIN CERTIFICATE-----\nfoo\n-----END CERTIFICATE-----\n",
+        )
+        .expect("write_anchor");
 
         assert!(path.is_file(), "anchor file not created at {:?}", path);
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;

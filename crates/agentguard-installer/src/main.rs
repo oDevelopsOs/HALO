@@ -531,7 +531,7 @@ fn install_displacement_windows(launcher_path: &str) -> Result<()> {
 
         println!("    → {} (displacing...)", agent_binary.display());
 
-        let parent = agent_binary.parent().unwrap().to_path_buf();
+        let parent = agent_binary.parent().unwrap().to_path_buf(); // unwrap-ok: binary always has a parent dir
         let real_path = parent.join(format!(".{}.real.exe", name));
 
         std::fs::rename(agent_binary, &real_path)?;
@@ -624,7 +624,7 @@ fn install_displacement(shim_path: &Path) -> Result<()> {
         }
 
         // Compute .real path
-        let parent = agent_binary.parent().unwrap().to_path_buf();
+        let parent = agent_binary.parent().unwrap().to_path_buf(); // unwrap-ok: binary always has a parent dir
         let real_path = parent.join(format!(".{name}.real"));
 
         // Displace

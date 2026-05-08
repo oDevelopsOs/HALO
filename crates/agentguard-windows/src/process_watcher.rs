@@ -268,17 +268,16 @@ mod windows_impl {
                         "AI agent detected via polling"
                     );
 
-                    let _ = event_tx
-                        .send(SecurityEvent::AgentDetected {
-                            pid: pid_u32,
-                            agent_name: exe_name,
-                            cwd,
-                            mode: "sandbox".into(),
-                            timestamp: std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| d.as_secs())
-                                .unwrap_or(0),
-                        });
+                    let _ = event_tx.send(SecurityEvent::AgentDetected {
+                        pid: pid_u32,
+                        agent_name: exe_name,
+                        cwd,
+                        mode: "sandbox".into(),
+                        timestamp: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0),
+                    });
                 }
             }
 

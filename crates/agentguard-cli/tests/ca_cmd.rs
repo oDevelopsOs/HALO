@@ -54,10 +54,7 @@ fn ca_show_with_no_existing_ca_warns_user() {
     let ca_dir = tmp.path().join("agentguard-ca-test");
     let ca_dir_str = ca_dir.to_string_lossy().to_string();
 
-    let (stdout, _stderr, code) = run(
-        &["ca", "show"],
-        &[("AGENTGUARD_CA_DIR", &ca_dir_str)],
-    );
+    let (stdout, _stderr, code) = run(&["ca", "show"], &[("AGENTGUARD_CA_DIR", &ca_dir_str)]);
 
     // `show` must not error if the CA file does not yet exist; it should
     // print a helpful warning instead.
@@ -91,15 +88,18 @@ fn ca_show_with_generated_ca_prints_fingerprint_and_path() {
     std::fs::write(ca_dir.join("root.crt"), dummy_pem).unwrap();
 
     let ca_dir_str = ca_dir.to_string_lossy().to_string();
-    let (stdout, _stderr, code) = run(
-        &["ca", "show"],
-        &[("AGENTGUARD_CA_DIR", &ca_dir_str)],
-    );
+    let (stdout, _stderr, code) = run(&["ca", "show"], &[("AGENTGUARD_CA_DIR", &ca_dir_str)]);
 
     assert_eq!(code, 0, "ca show with valid PEM should succeed");
     assert!(stdout.contains(&ca_dir_str), "stdout should mention CA dir");
-    assert!(stdout.contains("root.crt"), "stdout should mention cert filename");
-    assert!(stdout.contains("PEM SHA-256:"), "stdout should print fingerprint label");
+    assert!(
+        stdout.contains("root.crt"),
+        "stdout should mention cert filename"
+    );
+    assert!(
+        stdout.contains("PEM SHA-256:"),
+        "stdout should print fingerprint label"
+    );
     // Each byte rendered as "XX:" → 32 bytes × 3 = 96 chars (no trailing colon)
     assert!(
         stdout.contains(":") && stdout.matches(':').count() >= 31,

@@ -19,7 +19,7 @@ use aya::{Bpf, BpfLoader};
 use include_bytes_aligned::include_bytes_aligned;
 use tokio::sync::broadcast;
 
-use agentguard_common::{EventType, FileEvent, MAX_PROTECTED_INODES, MAX_PREFIX_LEN};
+use agentguard_common::{EventType, FileEvent, MAX_PREFIX_LEN, MAX_PROTECTED_INODES};
 use agentguard_core::{GuardError, KernelGuard, ProtectionLevel, SecurityEvent, ViolationKind};
 
 const FILE_GUARD_BYTECODE: &[u8] =
@@ -74,16 +74,16 @@ impl EbpfGuard {
         // protection surface: if no critical hook attaches, we refuse to
         // run in eBPF mode and fall back to the userspace backend.
         const CORE_HOOKS: &[(&str, bool)] = &[
-            ("inode_unlink",        true),  // rm
-            ("inode_rmdir",         true),  // rmdir
-            ("inode_rename",        true),  // mv
-            ("file_open",           true),  // write-open of protected file
-            ("file_truncate",       true),  // truncate
-            ("inode_create",        true),  // touch new file in protected dir
-            ("inode_mkdir",         false), // mkdir new subdir
-            ("inode_mknod",         false),
-            ("inode_symlink",       false),
-            ("inode_link",          false), // hardlink bypass
+            ("inode_unlink", true),  // rm
+            ("inode_rmdir", true),   // rmdir
+            ("inode_rename", true),  // mv
+            ("file_open", true),     // write-open of protected file
+            ("file_truncate", true), // truncate
+            ("inode_create", true),  // touch new file in protected dir
+            ("inode_mkdir", false),  // mkdir new subdir
+            ("inode_mknod", false),
+            ("inode_symlink", false),
+            ("inode_link", false),          // hardlink bypass
             ("bprm_check_security", false), // agent exec block
         ];
 
@@ -121,11 +121,9 @@ impl EbpfGuard {
         // Require at least one *critical* hook. Losing optional hooks only
         // reduces coverage; losing every critical hook means protection is
         // effectively zero, so we fall back to userspace.
-        let critical_attached = attached.iter().any(|h| {
-            CORE_HOOKS
-                .iter()
-                .any(|(n, crit)| *crit && h == n)
-        });
+        let critical_attached = attached
+            .iter()
+            .any(|h| CORE_HOOKS.iter().any(|(n, crit)| *crit && h == n));
         if !critical_attached {
             let detail = failures
                 .iter()
@@ -690,7 +688,13 @@ fn insert_inode_kv(
     let key = build_inode_key(dev, ino);
     match hmap.insert(key, 1, 0) {
         Ok(()) => {
-            tracing::debug!(?canonical, dev, ino, key = format!("{key:#x}"), "inode inserted");
+            tracing::debug!(
+                ?canonical,
+                dev,
+                ino,
+                key = format!("{key:#x}"),
+                "inode inserted"
+            );
             true
         }
         Err(e) => {
@@ -872,8 +876,7 @@ fn populate_inode_map(bpf: &mut Bpf, map_name: &str, paths: &[PathBuf]) -> Resul
             }
 
             if recurse && meta.is_dir() {
-                let indexed =
-                    index_subtree_dirs(&canonical, dev, &mut hmap, &mut count, limit)?;
+                let indexed = index_subtree_dirs(&canonical, dev, &mut hmap, &mut count, limit)?;
                 tracing::info!(
                     ?canonical,
                     indexed,
@@ -923,8 +926,12 @@ fn populate_btf_offsets(bpf: &mut Bpf) -> Result<(), GuardError> {
     let parsed = parse_btf_offsets(&mut offsets);
     match &parsed {
         Ok(()) => tracing::info!(
-            i_ino = offsets[0], i_sb = offsets[1], s_dev = offsets[2],
-            f_inode = offsets[3], d_parent = offsets[4], d_inode = offsets[5],
+            i_ino = offsets[0],
+            i_sb = offsets[1],
+            s_dev = offsets[2],
+            f_inode = offsets[3],
+            d_parent = offsets[4],
+            d_inode = offsets[5],
             f_flags = offsets[6],
             "BTF kernel struct offsets resolved",
         ),
@@ -994,15 +1001,19 @@ fn parse_btf_offsets(offsets: &mut [u64; 7]) -> Result<(), String> {
     //   u32 type_len  @ 0x0c
     //   u32 str_off   @ 0x10
     //   u32 str_len   @ 0x14
-    let hdr_len  = u32::from_ne_bytes([data[4],  data[5],  data[6],  data[7]])  as usize;
-    let type_off = u32::from_ne_bytes([data[8],  data[9],  data[10], data[11]]) as usize;
+    let hdr_len = u32::from_ne_bytes([data[4], data[5], data[6], data[7]]) as usize;
+    let type_off = u32::from_ne_bytes([data[8], data[9], data[10], data[11]]) as usize;
     let type_len = u32::from_ne_bytes([data[12], data[13], data[14], data[15]]) as usize;
-    let str_off  = u32::from_ne_bytes([data[16], data[17], data[18], data[19]]) as usize;
-    let str_len  = u32::from_ne_bytes([data[20], data[21], data[22], data[23]]) as usize;
+    let str_off = u32::from_ne_bytes([data[16], data[17], data[18], data[19]]) as usize;
+    let str_len = u32::from_ne_bytes([data[20], data[21], data[22], data[23]]) as usize;
     let types_start = hdr_len.checked_add(type_off).ok_or("type_off overflow")?;
-    let types_end = types_start.checked_add(type_len).ok_or("type_len overflow")?;
+    let types_end = types_start
+        .checked_add(type_len)
+        .ok_or("type_len overflow")?;
     let strings_start = hdr_len.checked_add(str_off).ok_or("str_off overflow")?;
-    let strings_end = strings_start.checked_add(str_len).ok_or("str_len overflow")?;
+    let strings_end = strings_start
+        .checked_add(str_len)
+        .ok_or("str_len overflow")?;
     if types_end > data.len() || strings_end > data.len() {
         return Err("BTF sections exceed file".into());
     }
@@ -1049,8 +1060,14 @@ fn parse_btf_offsets(offsets: &mut [u64; 7]) -> Result<(), String> {
     //   u32 size|type @ 8   ← size (for INT/ENUM/STRUCT/UNION/DATASEC) or type_id
     let mut pos = 0usize;
     while pos + 12 <= types.len() {
-        let name_off = u32::from_ne_bytes([types[pos],     types[pos + 1], types[pos + 2], types[pos + 3]]);
-        let info     = u32::from_ne_bytes([types[pos + 4], types[pos + 5], types[pos + 6], types[pos + 7]]);
+        let name_off =
+            u32::from_ne_bytes([types[pos], types[pos + 1], types[pos + 2], types[pos + 3]]);
+        let info = u32::from_ne_bytes([
+            types[pos + 4],
+            types[pos + 5],
+            types[pos + 6],
+            types[pos + 7],
+        ]);
         let kind = (info >> 24) & 0x1f;
         let vlen = (info & 0xffff) as usize;
 
@@ -1064,19 +1081,29 @@ fn parse_btf_offsets(offsets: &mut [u64; 7]) -> Result<(), String> {
                     if mp + 12 > types.len() {
                         break;
                     }
-                    let m_name_off = u32::from_ne_bytes([types[mp], types[mp+1], types[mp+2], types[mp+3]]);
-                    let m_offset = u32::from_ne_bytes([types[mp+8], types[mp+9], types[mp+10], types[mp+11]]);
+                    let m_name_off = u32::from_ne_bytes([
+                        types[mp],
+                        types[mp + 1],
+                        types[mp + 2],
+                        types[mp + 3],
+                    ]);
+                    let m_offset = u32::from_ne_bytes([
+                        types[mp + 8],
+                        types[mp + 9],
+                        types[mp + 10],
+                        types[mp + 11],
+                    ]);
                     let m_name = btf_str(strings, m_name_off);
                     // BTF struct member offset is bits; bit 31 signals bitfield (mask 0x7fffffff).
                     let byte_off = ((m_offset & 0x00ff_ffff) / 8) as u64;
                     match (name, m_name) {
-                        ("inode",       "i_ino")    => offsets[0] = byte_off,
-                        ("inode",       "i_sb")     => offsets[1] = byte_off,
-                        ("super_block", "s_dev")    => offsets[2] = byte_off,
-                        ("file",        "f_inode")  => offsets[3] = byte_off,
-                        ("dentry",      "d_parent") => offsets[4] = byte_off,
-                        ("dentry",      "d_inode")  => offsets[5] = byte_off,
-                        ("file",        "f_flags")  => offsets[6] = byte_off,
+                        ("inode", "i_ino") => offsets[0] = byte_off,
+                        ("inode", "i_sb") => offsets[1] = byte_off,
+                        ("super_block", "s_dev") => offsets[2] = byte_off,
+                        ("file", "f_inode") => offsets[3] = byte_off,
+                        ("dentry", "d_parent") => offsets[4] = byte_off,
+                        ("dentry", "d_inode") => offsets[5] = byte_off,
+                        ("file", "f_flags") => offsets[6] = byte_off,
                         _ => {}
                     }
                 }
@@ -1086,20 +1113,20 @@ fn parse_btf_offsets(offsets: &mut [u64; 7]) -> Result<(), String> {
         // Per-kind entry size (after the 12-byte common header). Table from
         // Documentation/bpf/btf.rst + libbpf btf.c.
         let extra = match kind {
-            K_INT                      => 4,
-            K_ARRAY                    => 12,
-            K_STRUCT | K_UNION         => vlen * 12,
-            K_ENUM                     => vlen * 8,
+            K_INT => 4,
+            K_ARRAY => 12,
+            K_STRUCT | K_UNION => vlen * 12,
+            K_ENUM => vlen * 8,
             // struct btf_enum64 = { u32 name_off; u32 val_lo32; u32 val_hi32 }
-            K_ENUM64                   => vlen * 12,
-            K_FUNC_PROTO               => vlen * 8,
-            K_VAR                      => 4,
-            K_DATASEC                  => vlen * 12,
-            K_DECL_TAG                 => 4,
+            K_ENUM64 => vlen * 12,
+            K_FUNC_PROTO => vlen * 8,
+            K_VAR => 4,
+            K_DATASEC => vlen * 12,
+            K_DECL_TAG => 4,
             // PTR, FWD, TYPEDEF, VOLATILE, CONST, RESTRICT, FUNC, FLOAT,
             // TYPE_TAG: no extra payload beyond the 12-byte header.
-            K_UNKN | K_PTR | K_FWD | K_TYPEDEF | K_VOLATILE | K_CONST | K_RESTRICT
-                | K_FUNC | K_FLOAT | K_TYPE_TAG => 0,
+            K_UNKN | K_PTR | K_FWD | K_TYPEDEF | K_VOLATILE | K_CONST | K_RESTRICT | K_FUNC
+            | K_FLOAT | K_TYPE_TAG => 0,
             _ => {
                 // Unknown kind — bail out; parsing further risks desync.
                 return Err(format!("unknown BTF kind {kind} at offset {pos}"));
@@ -1198,8 +1225,7 @@ mod tests {
         );
 
         // Each path must be one of the 4 we created
-        let paths: std::collections::HashSet<_> =
-            triples.iter().map(|(p, ..)| p.clone()).collect();
+        let paths: std::collections::HashSet<_> = triples.iter().map(|(p, ..)| p.clone()).collect();
         assert!(paths.contains(&root.join("a")));
         assert!(paths.contains(&root.join("a/b")));
         assert!(paths.contains(&root.join("a/b/c")));
@@ -1226,7 +1252,11 @@ mod tests {
         let root_dev = std::fs::metadata(root).unwrap().dev();
 
         let triples = walk_subtree_dirs(root, root_dev, 4);
-        assert!(triples.len() <= 4, "walker exceeded limit: {}", triples.len());
+        assert!(
+            triples.len() <= 4,
+            "walker exceeded limit: {}",
+            triples.len()
+        );
         assert!(!triples.is_empty(), "walker returned nothing");
     }
 
@@ -1246,8 +1276,7 @@ mod tests {
         let triples = walk_subtree_dirs(root, root_dev, 100);
 
         // Should contain `real` but not the symlink (and must terminate quickly)
-        let paths: std::collections::HashSet<_> =
-            triples.iter().map(|(p, ..)| p.clone()).collect();
+        let paths: std::collections::HashSet<_> = triples.iter().map(|(p, ..)| p.clone()).collect();
         assert!(paths.contains(&root.join("real")));
         assert!(!paths.contains(&link), "symlink was followed: {:?}", paths);
     }

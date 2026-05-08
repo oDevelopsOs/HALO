@@ -428,13 +428,13 @@ fn build_command(cmd: Command) -> IpcCommand {
             group,
         } => {
             if all {
-                unreachable!("protect --all handled locally")
+                unreachable!("protect --all handled locally") // unwrap-ok: filtered before IPC dispatch
             }
             if group.is_some() {
-                unreachable!("protect --group handled locally")
+                unreachable!("protect --group handled locally") // unwrap-ok: filtered before IPC dispatch
             }
             IpcCommand::Protect {
-                path: path.expect("path required"),
+                path: path.expect("path required"), // unwrap-ok: clap ensures path is Some when not --all/--group
                 watch_only,
             }
         }
@@ -1717,22 +1717,20 @@ fn ca_pem_sha256(pem: &str) -> String {
 fn handle_ca_install() -> Result<()> {
     use agentguard_core::ca::LocalCa;
     let ca_dir = resolve_ca_dir();
-    println!("{} Installing AgentGuard CA into the system trust store", bold("•"));
+    println!(
+        "{} Installing AgentGuard CA into the system trust store",
+        bold("•")
+    );
     println!("  CA directory: {}", ca_dir.display());
 
-    let ca = LocalCa::load_or_generate(&ca_dir).with_context(|| {
-        format!("loading/creating CA at {}", ca_dir.display())
-    })?;
+    let ca = LocalCa::load_or_generate(&ca_dir)
+        .with_context(|| format!("loading/creating CA at {}", ca_dir.display()))?;
 
     #[cfg(unix)]
     {
         match ca.install_system_trust() {
             Ok(report) => {
-                println!(
-                    "  {} Installed via {:?}",
-                    green("✓"),
-                    report.method
-                );
+                println!("  {} Installed via {:?}", green("✓"), report.method);
                 if let Some(p) = &report.installed_path {
                     println!("  Anchor file: {}", p.display());
                 }
@@ -1760,22 +1758,34 @@ fn handle_ca_install() -> Result<()> {
     }
     #[cfg(not(unix))]
     {
-        println!("  {} System trust store management is Linux-only.", yellow("⚠"));
-        println!("  On Windows, run: certutil -addstore ROOT {}", ca.cert_path().display());
+        println!(
+            "  {} System trust store management is Linux-only.",
+            yellow("⚠")
+        );
+        println!(
+            "  On Windows, run: certutil -addstore ROOT {}",
+            ca.cert_path().display()
+        );
         Ok(())
     }
 }
 
 fn handle_ca_uninstall() -> Result<()> {
     use agentguard_core::ca::LocalCa;
-    println!("{} Removing AgentGuard CA from the system trust store", bold("•"));
+    println!(
+        "{} Removing AgentGuard CA from the system trust store",
+        bold("•")
+    );
     #[cfg(unix)]
     {
         LocalCa::uninstall_system_trust().context("uninstall_system_trust")?;
     }
     #[cfg(not(unix))]
     {
-        println!("  {} System trust store management is Linux-only.", yellow("⚠"));
+        println!(
+            "  {} System trust store management is Linux-only.",
+            yellow("⚠")
+        );
     }
     println!("  {} CA removed from trust store", green("✓"));
     Ok(())
@@ -1892,7 +1902,7 @@ fn main() -> Result<()> {
                 group: Some(ref name),
                 ..
             } => return handle_protect_group(name),
-            _ => unreachable!(),
+            _ => unreachable!(), // unwrap-ok: all Command variants are matched above
         }
     }
 
