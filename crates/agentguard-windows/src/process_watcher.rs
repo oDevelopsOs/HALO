@@ -189,7 +189,7 @@ mod windows_impl {
             let tx = watcher.event_tx.clone();
             let agent_name = image_name;
             let cwd_path = std::path::PathBuf::from(&cwd);
-            let _ = tx.try_send(SecurityEvent::AgentDetected {
+            let _ = tx.send(SecurityEvent::AgentDetected {
                 pid: process_id,
                 agent_name,
                 cwd: cwd_path,
@@ -278,8 +278,7 @@ mod windows_impl {
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .map(|d| d.as_secs())
                                 .unwrap_or(0),
-                        })
-                        .await;
+                        });
                 }
             }
 

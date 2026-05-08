@@ -1724,43 +1724,59 @@ fn handle_ca_install() -> Result<()> {
         format!("loading/creating CA at {}", ca_dir.display())
     })?;
 
-    match ca.install_system_trust() {
-        Ok(report) => {
-            println!(
-                "  {} Installed via {:?}",
-                green("✓"),
-                report.method
-            );
-            if let Some(p) = &report.installed_path {
-                println!("  Anchor file: {}", p.display());
-            }
-            if !report.trust_update_run {
+    #[cfg(unix)]
+    {
+        match ca.install_system_trust() {
+            Ok(report) => {
                 println!(
-                    "  {} No trust-update tool was run automatically. \
-                     Refresh manually for your distro:",
-                    yellow("⚠")
+                    "  {} Installed via {:?}",
+                    green("✓"),
+                    report.method
                 );
-                println!("    Fedora/RHEL:   sudo update-ca-trust extract");
-                println!("    Debian/Ubuntu: sudo update-ca-certificates");
-                println!("    Arch:          sudo trust extract-compat");
+                if let Some(p) = &report.installed_path {
+                    println!("  Anchor file: {}", p.display());
+                }
+                if !report.trust_update_run {
+                    println!(
+                        "  {} No trust-update tool was run automatically. \
+                         Refresh manually for your distro:",
+                        yellow("⚠")
+                    );
+                    println!("    Fedora/RHEL:   sudo update-ca-trust extract");
+                    println!("    Debian/Ubuntu: sudo update-ca-certificates");
+                    println!("    Arch:          sudo trust extract-compat");
+                }
+                Ok(())
             }
-            Ok(())
+            Err(e) => {
+                eprintln!(
+                    "  {} Trust-store install failed: {}\n  Hint: run with sudo.",
+                    red("✗"),
+                    e
+                );
+                Err(anyhow::anyhow!(e))
+            }
         }
-        Err(e) => {
-            eprintln!(
-                "  {} Trust-store install failed: {}\n  Hint: run with sudo.",
-                red("✗"),
-                e
-            );
-            Err(anyhow::anyhow!(e))
-        }
+    }
+    #[cfg(not(unix))]
+    {
+        println!("  {} System trust store management is Linux-only.", yellow("⚠"));
+        println!("  On Windows, run: certutil -addstore ROOT {}", ca.cert_path().display());
+        Ok(())
     }
 }
 
 fn handle_ca_uninstall() -> Result<()> {
     use agentguard_core::ca::LocalCa;
     println!("{} Removing AgentGuard CA from the system trust store", bold("•"));
-    LocalCa::uninstall_system_trust().context("uninstall_system_trust")?;
+    #[cfg(unix)]
+    {
+        LocalCa::uninstall_system_trust().context("uninstall_system_trust")?;
+    }
+    #[cfg(not(unix))]
+    {
+        println!("  {} System trust store management is Linux-only.", yellow("⚠"));
+    }
     println!("  {} CA removed from trust store", green("✓"));
     Ok(())
 }

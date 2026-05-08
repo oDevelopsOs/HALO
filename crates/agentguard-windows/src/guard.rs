@@ -226,7 +226,7 @@ impl KernelGuard for WindowsGuard {
                     match res {
                         Ok(event) => {
                             for ev in translate_notify_event(event) {
-                                if watch_tx.blocking_send(ev).is_err() {
+                                if watch_tx.send(ev).is_err() {
                                     return;
                                 }
                             }
@@ -1065,7 +1065,7 @@ mod win32 {
                                                     exe = %exe_name,
                                                     "contained AI agent in dedicated job object"
                                                 );
-                                                let _ = tx.blocking_send(
+                                                let _ = tx.send(
                                                     SecurityEvent::SystemError {
                                                         message: format!(
                                                             "AI agent contained: {exe_name} (pid {pid})"
