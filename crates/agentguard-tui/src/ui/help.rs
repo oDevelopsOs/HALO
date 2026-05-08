@@ -1,7 +1,7 @@
 use ratatui::{
     layout::Rect,
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Paragraph, Wrap},
     Frame,
 };
 
@@ -11,6 +11,7 @@ pub fn render(f: &mut Frame, area: Rect) {
     let block = Block::default()
         .title(" ? Help & Shortcuts ")
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(theme::BORDER);
 
     let lines = vec![

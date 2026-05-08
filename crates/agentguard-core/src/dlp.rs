@@ -12,8 +12,12 @@
 
 pub mod patterns;
 pub mod proxy;
+pub mod redaction;
+pub mod sanitizer;
 pub mod tls;
 
 pub use patterns::{compile_defaults, CompiledPattern, DEFAULT_PATTERNS};
 pub use proxy::{DlpProxy, DlpProxyHandle};
+pub use redaction::RedactionEngine;
+pub use sanitizer::PromptSanitizer;
 pub use tls::{LeafIssuer, TlsError};

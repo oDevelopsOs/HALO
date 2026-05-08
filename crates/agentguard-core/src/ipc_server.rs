@@ -11,12 +11,15 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use agentguard_common::{
-    AgentInfo, IpcCommand, IpcResponse, RuleInfo, SandboxedAgent, SessionInfo, SnapshotInfo,
+    AgentInfo, IpcCommand, IpcEvent, IpcResponse, RuleInfo, SandboxedAgent, SessionInfo,
+    SnapshotInfo,
 };
 use serde_json;
+use tokio::sync::broadcast;
 use tokio::sync::oneshot;
 
 use crate::config::Config;
+use crate::events::SecurityEvent;
 use crate::vault::Vault;
 
 /// Tipo de callback para lanzar un agente en sandbox.
@@ -63,6 +66,8 @@ pub struct IpcServer {
     incidents_count: Arc<AtomicU64>,
     /// Fase 5: database handle.
     db: Option<Arc<crate::db::Database>>,
+    /// Fase 6: event bus for push notifications.
+    event_tx: Option<broadcast::Sender<SecurityEvent>>,
 }
 
 impl IpcServer {
@@ -96,6 +101,7 @@ impl IpcServer {
             active_sandboxes: Arc::new(RwLock::new(Vec::new())),
             incidents_count: Arc::new(AtomicU64::new(0)),
             db: None,
+            event_tx: None,
         }
     }
 
@@ -117,9 +123,10 @@ impl IpcServer {
 
         #[cfg(unix)]
         {
+            use std::os::unix::net::UnixListener;
             let listener = {
                 use std::os::unix::fs::PermissionsExt;
-                let listener = std::os::unix::net::UnixListener::bind(&socket_path)?;
+                let listener = UnixListener::bind(&socket_path)?;
                 let mut perms = std::fs::metadata(&socket_path)?.permissions();
                 perms.set_mode(0o600);
                 std::fs::set_permissions(&socket_path, perms)?;
@@ -143,7 +150,7 @@ impl IpcServer {
                             continue;
                         }
                     };
-                    self.handle_connection(&mut stream);
+                    self.handle_connection_unix(&mut stream);
                 }
 
                 let _ = std::fs::remove_file(&sp);
@@ -178,6 +185,92 @@ impl IpcServer {
         start_named_pipe_server(self, pipe_name)
     }
 
+    /// Unix-specific connection handler: uses try_clone() to spawn
+    /// a writer thread for Subscribe, keeping the accept loop free.
+    #[cfg(unix)]
+    fn handle_connection_unix(&self, stream: &mut std::os::unix::net::UnixStream) {
+        let mut reader = BufReader::new(&mut *stream);
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => return,
+            _ => {}
+        }
+
+        let cmd: IpcCommand = match serde_json::from_str(line.trim()) {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = write_response(
+                    stream,
+                    &IpcResponse::Error {
+                        message: format!("invalid command: {e}"),
+                    },
+                );
+                return;
+            }
+        };
+
+        match cmd {
+            IpcCommand::Subscribe { .. } => {
+                let Some(ref event_tx) = self.event_tx else {
+                    let _ = write_response(
+                        stream,
+                        &IpcResponse::Error {
+                            message: "event bus not available on this daemon".into(),
+                        },
+                    );
+                    return;
+                };
+
+                // Clone the stream for the writer thread
+                let mut event_rx = event_tx.subscribe();
+                match stream.try_clone() {
+                    Ok(mut writer) => {
+                        // Spawn a dedicated thread so the accept loop stays free.
+                        // This thread only accesses event_rx (no &self on IpcServer).
+                        std::thread::spawn(move || {
+                            loop {
+                                match event_rx.blocking_recv() {
+                                    Ok(se) => {
+                                        let ipc_event = security_to_ipc_event(&se);
+                                        if write_json_line(&mut writer, &ipc_event).is_err() {
+                                            break;
+                                        }
+                                    }
+                                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                                        tracing::warn!(skipped = n, "IPC event subscriber lagging");
+                                    }
+                                    Err(broadcast::error::RecvError::Closed) => break,
+                                }
+                            }
+                            tracing::debug!("IPC event stream closed");
+                        });
+                    }
+                    Err(e) => {
+                        let _ = write_response(
+                            stream,
+                            &IpcResponse::Error {
+                                message: format!("failed to clone stream for events: {e}"),
+                            },
+                        );
+                    }
+                }
+            }
+            IpcCommand::Unsubscribe => {
+                let _ = write_response(
+                    stream,
+                    &IpcResponse::Ok {
+                        message: "unsubscribed".into(),
+                    },
+                );
+            }
+            _ => {
+                let response = self.execute(cmd);
+                let _ = write_response(stream, &response);
+            }
+        }
+    }
+
+    /// Generic handler for non-Unix platforms (Windows Named Pipes via impl Read + Write).
     #[allow(dead_code)]
     fn handle_connection(&self, stream: &mut (impl Read + Write)) {
         let mut reader = BufReader::new(&mut *stream);
@@ -200,8 +293,28 @@ impl IpcServer {
             }
         };
 
-        let response = self.execute(cmd);
-        let _ = write_response(stream, &response);
+        match cmd {
+            IpcCommand::Subscribe { .. } => {
+                let _ = write_response(
+                    stream,
+                    &IpcResponse::Error {
+                        message: "event stream not supported on this platform".into(),
+                    },
+                );
+            }
+            IpcCommand::Unsubscribe => {
+                let _ = write_response(
+                    stream,
+                    &IpcResponse::Ok {
+                        message: "unsubscribed".into(),
+                    },
+                );
+            }
+            _ => {
+                let response = self.execute(cmd);
+                let _ = write_response(stream, &response);
+            }
+        }
     }
 
     #[allow(dead_code)]
@@ -472,14 +585,21 @@ impl IpcServer {
                         };
                     }
                 };
+                let canonical_str = canonical.display().to_string();
                 if !cfg
                     .protected_dirs
                     .iter()
-                    .any(|p| p.display().to_string() == canonical.display().to_string())
+                    .any(|p| p.display().to_string() == canonical_str)
                 {
                     cfg.protected_dirs.push(canonical);
                 }
                 drop(cfg);
+
+                // Also persist to database if available
+                if let Some(ref db) = self.db {
+                    let _ = db.add_rule(&canonical_str, "dir", false);
+                }
+
                 IpcResponse::Ok {
                     message: format!("path {path} is now protected"),
                 }
@@ -633,6 +753,83 @@ impl IpcServer {
                         IpcResponse::Error { message: "database not available — use 'agentguard incidents' for legacy access".into() }
                     }
                 }
+            }
+            // Subscribe/Unsubscribe are handled in handle_connection before execute.
+            // These arms exist only for exhaustiveness; they are never reached.
+            IpcCommand::Subscribe { .. } => IpcResponse::Error {
+                message: "Subscribe must be handled at connection level".into(),
+            },
+            IpcCommand::Unsubscribe => IpcResponse::Error {
+                message: "Unsubscribe must be handled at connection level".into(),
+            },
+            IpcCommand::SmartSuggest => {
+                let cfg = match read_config(&self.config) {
+                    Ok(c) => c,
+                    Err(e) => return IpcResponse::Error { message: e },
+                };
+                let suggestions =
+                    crate::smart_protect::generate_smart_suggestions(&cfg.smart_protection);
+                let suggestion_infos: Vec<agentguard_common::SuggestionInfo> = suggestions
+                    .iter()
+                    .map(|s| agentguard_common::SuggestionInfo {
+                        path: s.path.display().to_string(),
+                        group: s.group.clone(),
+                        reason: s.reason.clone(),
+                        risk_level: s.risk_level.to_string(),
+                        size_bytes: s.size_bytes,
+                        contains_secrets: s.contains_secrets,
+                        is_git_repo: s.is_git_repo,
+                        active_agents: s.active_agents.clone(),
+                    })
+                    .collect();
+                IpcResponse::SmartSuggestions {
+                    suggestions: suggestion_infos,
+                }
+            }
+            IpcCommand::SmartApply { paths } => {
+                let mut cfg = match write_config(&self.config) {
+                    Ok(c) => c,
+                    Err(e) => return IpcResponse::Error { message: e },
+                };
+                let mut added = 0usize;
+                for path_str in &paths {
+                    let p = PathBuf::from(path_str);
+                    let canonical = match std::fs::canonicalize(&p) {
+                        Ok(c) => c,
+                        Err(_) => continue,
+                    };
+                    let canonical_str = canonical.display().to_string();
+                    if !cfg
+                        .protected_dirs
+                        .iter()
+                        .any(|d| d.display().to_string() == canonical_str)
+                    {
+                        cfg.protected_dirs.push(canonical.clone());
+                        added += 1;
+                    }
+                }
+                drop(cfg);
+                IpcResponse::Ok {
+                    message: format!("{} paths protected (restart daemon to apply)", added),
+                }
+            }
+            IpcCommand::ProfilesList => {
+                let cfg = match read_config(&self.config) {
+                    Ok(c) => c,
+                    Err(e) => return IpcResponse::Error { message: e },
+                };
+                let profiles: Vec<agentguard_common::ProfileInfo> = cfg
+                    .smart_protection
+                    .profiles
+                    .iter()
+                    .map(|p| agentguard_common::ProfileInfo {
+                        name: p.name.clone(),
+                        path_count: p.paths.len(),
+                        enabled: true,
+                        is_auto: p.auto,
+                    })
+                    .collect();
+                IpcResponse::ProfilesList { profiles }
             }
         }
     }
@@ -790,6 +987,8 @@ pub struct IpcServerBuilder {
     incidents_count: Arc<AtomicU64>,
     /// Fase 5
     db: Option<Arc<crate::db::Database>>,
+    /// Fase 6: event bus for push notifications.
+    event_tx: Option<broadcast::Sender<SecurityEvent>>,
 }
 
 impl IpcServerBuilder {
@@ -839,6 +1038,12 @@ impl IpcServerBuilder {
         self
     }
 
+    /// Fase 6: attach event bus for push notifications.
+    pub fn event_bus(mut self, tx: broadcast::Sender<SecurityEvent>) -> Self {
+        self.event_tx = Some(tx);
+        self
+    }
+
     pub fn build(self) -> Result<IpcServer, std::io::Error> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -857,6 +1062,7 @@ impl IpcServerBuilder {
             active_sandboxes: self.active_sandboxes,
             incidents_count: self.incidents_count,
             db: self.db,
+            event_tx: self.event_tx,
         })
     }
 }
@@ -886,10 +1092,101 @@ impl Drop for IpcShutdown {
 
 #[allow(dead_code)]
 fn write_response(stream: &mut impl Write, response: &IpcResponse) -> std::io::Result<()> {
-    let json = serde_json::to_string(response).map_err(std::io::Error::other)?;
+    write_json_line(stream, response)
+}
+
+#[allow(dead_code)]
+fn write_json_line(stream: &mut impl Write, value: &impl serde::Serialize) -> std::io::Result<()> {
+    let json = serde_json::to_string(value).map_err(std::io::Error::other)?;
     writeln!(stream, "{json}")?;
     stream.flush()?;
     Ok(())
+}
+
+fn security_to_ipc_event(event: &SecurityEvent) -> IpcEvent {
+    match event {
+        SecurityEvent::AgentDetected {
+            pid,
+            agent_name,
+            cwd,
+            mode,
+            timestamp,
+        } => IpcEvent::AgentSpawned {
+            agent_name: agent_name.clone(),
+            pid: *pid,
+            sandbox_pid: None,
+            mode: mode.clone(),
+            cwd: cwd.display().to_string(),
+            timestamp: *timestamp,
+        },
+        SecurityEvent::AgentSandboxed {
+            original_pid,
+            sandbox_pid,
+            agent_name,
+            cwd,
+            timestamp,
+        } => IpcEvent::AgentSpawned {
+            agent_name: agent_name.clone(),
+            pid: *original_pid,
+            sandbox_pid: Some(*sandbox_pid),
+            mode: "sandbox".into(),
+            cwd: cwd.display().to_string(),
+            timestamp: *timestamp,
+        },
+        SecurityEvent::FileViolation {
+            path,
+            process,
+            pid: _,
+            violation,
+            timestamp,
+        } => IpcEvent::ViolationDetected {
+            kind: "file_violation".into(),
+            agent_name: Some(process.clone()),
+            path: Some(path.display().to_string()),
+            violation: Some(format!("{violation:?}")),
+            detail: format!("{process} attempted {violation:?} on {}", path.display()),
+            timestamp: *timestamp,
+        },
+        SecurityEvent::DlpViolation {
+            pattern_name,
+            destination,
+            process,
+            pid: _,
+            timestamp,
+        } => IpcEvent::ViolationDetected {
+            kind: "dlp_violation".into(),
+            agent_name: Some(process.clone()),
+            path: Some(destination.clone()),
+            violation: Some(pattern_name.clone()),
+            detail: format!("{process} leaked {pattern_name} to {destination}"),
+            timestamp: *timestamp,
+        },
+        SecurityEvent::DlpRedaction {
+            pattern_name,
+            destination,
+            process,
+            pid: _,
+            redaction_count,
+            timestamp,
+        } => IpcEvent::ViolationDetected {
+            kind: "dlp_redaction".into(),
+            agent_name: Some(process.clone()),
+            path: Some(destination.clone()),
+            violation: Some(pattern_name.clone()),
+            detail: format!(
+                "{process} had {redaction_count} occurrence(s) of {pattern_name} redacted when sending to {destination}"
+            ),
+            timestamp: *timestamp,
+        },
+        SecurityEvent::SystemError { message, timestamp } => IpcEvent::ViolationDetected {
+            kind: "system_error".into(),
+            agent_name: None,
+            path: None,
+            violation: None,
+            detail: message.clone(),
+            timestamp: *timestamp,
+        },
+    }
 }
 
 #[cfg(test)]

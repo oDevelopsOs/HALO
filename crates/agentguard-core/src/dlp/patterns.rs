@@ -98,6 +98,56 @@ pub fn first_match<'a>(patterns: &'a [CompiledPattern], haystack: &str) -> Optio
         .map(|p| p.name.as_str())
 }
 
+/// Busca todos los patrones que hacen match y devuelve (nombre, cuántas ocurrencias).
+pub fn find_all_matches<'a>(
+    patterns: &'a [CompiledPattern],
+    haystack: &'a str,
+) -> Vec<(&'a str, usize)> {
+    patterns
+        .iter()
+        .filter_map(|p| {
+            let count = p.regex.find_iter(haystack).count();
+            if count > 0 {
+                Some((p.name.as_str(), count))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Reemplaza todas las ocurrencias de cada patrón con un marcador de redacción.
+/// Devuelve el texto redactado y un vector de (nombre_del_patrón, cuántas_ocurrencias).
+pub fn replace_all(
+    patterns: &[CompiledPattern],
+    haystack: &str,
+    style: &str,
+) -> (String, Vec<(String, usize)>) {
+    let mut result = haystack.to_string();
+    let mut events = Vec::new();
+
+    for p in patterns {
+        let replacement = match style {
+            "silent" => "[REDACTED]".to_string(),
+            "aggressive" => format!("[SECRET REMOVED - {}]", p.name),
+            _ => format!("[AGENTGUARD: {} REDACTED]", p.name),
+        };
+
+        let mut count = 0usize;
+        let new = p.regex.replace_all(&result, |_: &regex::Captures| {
+            count += 1;
+            replacement.clone()
+        });
+        result = new.to_string();
+
+        if count > 0 {
+            events.push((p.name.clone(), count));
+        }
+    }
+
+    (result, events)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,5 +230,67 @@ mod tests {
         ];
         let all = compile_custom(&custom).expect("compile");
         assert_eq!(first_match(&all, "abc"), Some("A"));
+    }
+
+    #[test]
+    fn replace_all_redacts_single_secret() {
+        let p = compile_defaults().expect("defaults");
+        let body = "token: sk-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMN";
+        let (redacted, events) = replace_all(&p, body, "visible");
+        assert!(redacted.contains("[AGENTGUARD: OpenAI API Key REDACTED]"));
+        assert!(!redacted.contains("sk-abcdefghi"));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OpenAI API Key");
+        assert_eq!(events[0].1, 1);
+    }
+
+    #[test]
+    fn replace_all_redacts_multiple_secrets() {
+        let p = compile_defaults().expect("defaults");
+        let body = "key1: sk-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMN\nkey2: sk-ant-api03-abcdefghijklmnopqrstuvwxyz1234567890";
+        let (redacted, events) = replace_all(&p, body, "visible");
+        assert!(redacted.contains("[AGENTGUARD: OpenAI API Key REDACTED]"));
+        assert!(redacted.contains("[AGENTGUARD: Anthropic API Key REDACTED]"));
+        assert_eq!(events.len(), 2);
+    }
+
+    #[test]
+    fn replace_all_silent_style_uses_generic_marker() {
+        let p = compile_defaults().expect("defaults");
+        let body = "key: sk-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMN";
+        let (redacted, events) = replace_all(&p, body, "silent");
+        assert!(redacted.contains("[REDACTED]"));
+        assert!(!redacted.contains("AGENTGUARD:"));
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn replace_all_clean_text_no_changes() {
+        let p = compile_defaults().expect("defaults");
+        let body = "hello world, nothing to see here";
+        let (redacted, events) = replace_all(&p, body, "visible");
+        assert_eq!(redacted, body);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn find_all_matches_detects_multiple_patterns() {
+        let p = compile_defaults().expect("defaults");
+        let body = "openai: sk-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMN\ngithub: ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let matches = find_all_matches(&p, body);
+        assert!(matches.iter().any(|(n, _)| *n == "OpenAI API Key"));
+        assert!(matches.iter().any(|(n, _)| *n == "GitHub Personal Token"));
+    }
+
+    #[test]
+    fn find_all_matches_counts_occurrences() {
+        let p = compile_defaults().expect("defaults");
+        let body = "key1: sk-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMN\nkey2: sk-ABCDEFGHIJKLMNabcdefghijklmnopqrstuvwxyz0123456789";
+        let matches = find_all_matches(&p, body);
+        let oai = matches
+            .iter()
+            .find(|(n, _)| *n == "OpenAI API Key")
+            .unwrap();
+        assert_eq!(oai.1, 2);
     }
 }

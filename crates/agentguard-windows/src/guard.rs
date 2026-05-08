@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 #[cfg(windows)]
 use notify::Watcher;
-use tokio::sync::mpsc;
+use tokio::sync::broadcast;
 #[cfg(windows)]
 use tracing::info;
 use tracing::warn;
@@ -192,7 +192,10 @@ impl KernelGuard for WindowsGuard {
         }
     }
 
-    async fn run(mut self: Box<Self>, tx: mpsc::Sender<SecurityEvent>) -> Result<(), GuardError> {
+    async fn run(
+        mut self: Box<Self>,
+        tx: broadcast::Sender<SecurityEvent>,
+    ) -> Result<(), GuardError> {
         #[cfg(windows)]
         {
             use windows::Win32::Foundation::{CloseHandle, HANDLE};
@@ -294,7 +297,7 @@ mod win32 {
     use std::ffi::c_void;
     use std::path::Path;
 
-    use tokio::sync::mpsc;
+    use tokio::sync::broadcast;
     use tracing::{info, warn};
 
     use super::unix_ts;
@@ -1004,7 +1007,7 @@ mod win32 {
         patterns: &[AgentProcess],
         tracked: &mut HashSet<u32>,
         jobs: &mut HashMap<u32, isize>,
-        tx: &mpsc::Sender<SecurityEvent>,
+        tx: &broadcast::Sender<SecurityEvent>,
     ) {
         let current_pid = unsafe { GetCurrentProcessId() };
 

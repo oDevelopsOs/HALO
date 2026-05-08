@@ -1,6 +1,6 @@
 //! Estado global de la aplicación TUI.
 
-use agentguard_common::{AgentInfo, SnapshotInfo};
+use agentguard_common::{AgentInfo, IpcEvent, SnapshotInfo};
 
 use crate::ipc::IpcClient;
 
@@ -150,6 +150,92 @@ impl AppState {
         match client.agents() {
             Ok(agents) => self.agents = agents,
             Err(_) => self.agents = Vec::new(),
+        }
+    }
+
+    /// Procesa un evento push recibido del daemon en tiempo real.
+    pub fn handle_ipc_event(&mut self, event: IpcEvent) {
+        match event {
+            IpcEvent::AgentSpawned {
+                agent_name,
+                pid,
+                sandbox_pid,
+                mode,
+                cwd: _,
+                timestamp: _,
+            } => {
+                let sb = if let Some(sp) = sandbox_pid {
+                    format!("spawned {agent_name} (pid={pid}, sandbox={sp}, mode={mode})")
+                } else {
+                    format!("detected {agent_name} (pid={pid}, mode={mode})")
+                };
+                self.set_status(sb);
+                self.daemon.active_sandboxes += 1;
+            }
+            IpcEvent::AgentExited {
+                agent_name,
+                sandbox_pid,
+                ..
+            } => {
+                self.set_status(format!("{agent_name} (pid={sandbox_pid}) exited"));
+                self.daemon.active_sandboxes = self.daemon.active_sandboxes.saturating_sub(1);
+            }
+            IpcEvent::ViolationDetected {
+                kind, path, detail, ..
+            } => {
+                self.daemon.incidents_count += 1;
+                let msg = if let Some(p) = path {
+                    format!("[{kind}] {detail} — {p}")
+                } else {
+                    format!("[{kind}] {detail}")
+                };
+                self.incidents.insert(0, msg);
+                if self.incidents.len() > 200 {
+                    self.incidents.truncate(200);
+                }
+            }
+            IpcEvent::ProtectionToggled { paused, .. } => {
+                self.daemon.paused = paused;
+                if paused {
+                    self.set_status("Protection paused".into());
+                } else {
+                    self.set_status("Protection resumed".into());
+                }
+            }
+            IpcEvent::SnapshotCreated {
+                id,
+                label,
+                files,
+                total_size,
+            } => {
+                self.set_status(format!(
+                    "Snapshot '{label}' created ({files} files, {total_size}B)"
+                ));
+                self.snapshots.insert(
+                    0,
+                    SnapshotInfo {
+                        id,
+                        timestamp: 0,
+                        label,
+                        files,
+                        total_size,
+                    },
+                );
+            }
+            IpcEvent::ConfigReloaded => {
+                self.set_status("Config reloaded".into());
+            }
+            IpcEvent::DaemonShutdown => {
+                self.daemon.connected = false;
+                self.set_error("Daemon shut down".into());
+            }
+            IpcEvent::Disconnected { reason } => {
+                self.daemon.connected = false;
+                self.set_error(format!("Disconnected: {reason}"));
+            }
+            IpcEvent::Heartbeat { .. } => {
+                // Just confirms connection is alive — no UI change needed.
+            }
         }
     }
 }

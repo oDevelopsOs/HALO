@@ -2,7 +2,7 @@
 
 use ratatui::{
     layout::Rect,
-    widgets::{Block, Borders, List, ListItem},
+    widgets::{Block, BorderType, Borders, List, ListItem},
     Frame,
 };
 
@@ -20,6 +20,7 @@ pub fn render(f: &mut Frame, state: &AppState, area: Rect) {
             files.len()
         ))
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(theme::BORDER);
 
     let mut items: Vec<ListItem> = Vec::new();

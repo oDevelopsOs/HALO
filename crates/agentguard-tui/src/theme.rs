@@ -1,9 +1,10 @@
-//! AgentGuard TUI theme — purple accent system.
+//! AgentGuard TUI theme — purple + orange accent system.
 //!
-//! Palette: only 3 colors strictly.
+//! Palette:
 //!   Background: #0A0A0A (deep matte black)
-//!   Text:       #F8F8F8 (soft white)
-//!   Purple:     #7C3AED (vibrant purple — all interactive elements)
+//!   Surface:    #15141C (card surfaces)
+//!   Purple:     #7C3AED (vibrant purple — interactive elements)
+//!   Orange:     #F97316 (warm orange — warnings/violations, Claude-style)
 
 use ratatui::style::{Color, Modifier, Style};
 
@@ -15,7 +16,8 @@ pub const PURPLE_BRIGHT: Color = Color::Rgb(0xA7, 0x8B, 0xFA);
 #[allow(dead_code)]
 pub const TEXT: Color = Color::Rgb(0xF8, 0xF8, 0xF8);
 pub const MUTED: Color = Color::Rgb(0x6B, 0x6A, 0x72);
-pub const DANGER: Color = Color::Rgb(0xEF, 0x44, 0x44);
+pub const ORANGE: Color = Color::Rgb(0xF9, 0x73, 0x16);
+pub const ORANGE_DIM: Color = Color::Rgb(0xC2, 0x41, 0x0C);
 pub const BORDER: Color = Color::Rgb(0x2D, 0x2C, 0x35);
 
 pub fn title_style() -> Style {
@@ -30,11 +32,11 @@ pub fn muted_style() -> Style {
     Style::default().fg(MUTED)
 }
 pub fn danger_style() -> Style {
-    Style::default().fg(DANGER).add_modifier(Modifier::BOLD)
+    Style::default().fg(ORANGE).add_modifier(Modifier::BOLD)
 }
 #[allow(dead_code)]
 pub fn warning_style() -> Style {
-    Style::default().fg(Color::Rgb(0xFB, 0xBF, 0x24))
+    Style::default().fg(ORANGE_DIM)
 }
 pub fn accent_style() -> Style {
     Style::default().fg(PURPLE_BRIGHT)
@@ -53,8 +55,8 @@ mod tests {
         assert_eq!(PURPLE, Color::Rgb(0x7C, 0x3A, 0xED));
     }
     #[test]
-    fn text_is_soft_white() {
-        assert_eq!(TEXT, Color::Rgb(0xF8, 0xF8, 0xF8));
+    fn orange_is_warm() {
+        assert_eq!(ORANGE, Color::Rgb(0xF9, 0x73, 0x16));
     }
     #[test]
     fn title_style_has_bold_and_purple() {
@@ -72,5 +74,10 @@ mod tests {
     fn accent_style_uses_bright() {
         let s = accent_style();
         assert_eq!(s.fg, Some(PURPLE_BRIGHT));
+    }
+    #[test]
+    fn danger_style_uses_orange() {
+        let s = danger_style();
+        assert_eq!(s.fg, Some(ORANGE));
     }
 }

@@ -55,6 +55,9 @@ pub enum CaError {
 
     #[error("corrupted CA directory at {dir:?}: {reason}")]
     Corrupt { dir: PathBuf, reason: &'static str },
+
+    #[error("system trust store install failed: {0}")]
+    TrustInstall(String),
 }
 
 /// CA root cargada en memoria, lista para firmar certificados leaf.
@@ -187,6 +190,283 @@ impl LocalCa {
     pub fn cert_path(&self) -> PathBuf {
         self.dir.join(CA_CERT_FILE)
     }
+
+    /// Install the local CA root certificate into the system trust store.
+    ///
+    /// Detects which trust-store update tool is available on the host
+    /// without inspecting `/etc/os-release` — this works equally on
+    /// Ubuntu, Debian, Fedora, RHEL, CentOS, Rocky, openSUSE, Arch, Alpine,
+    /// and any other distro that ships one of the standard tools.
+    ///
+    /// Detection priority (`detect_ca_trust_method`):
+    /// 1. `update-ca-trust`        → Fedora / RHEL / CentOS / Rocky
+    /// 2. `update-ca-certificates` → Debian / Ubuntu / openSUSE / Alpine
+    /// 3. `trust`                  → Arch / any p11-kit based system
+    /// 4. Manual fallback          → write to first-existing anchor dir,
+    ///    and warn the user to run the trust update by hand
+    ///
+    /// Returns a [`TrustInstallReport`] describing which method was used
+    /// and where the file was written. Errors are surfaced as
+    /// [`CaError::TrustInstall`].
+    ///
+    /// **Requires root** (writes to `/etc/...`). Caller must have
+    /// `CAP_DAC_OVERRIDE` or be uid 0; otherwise the underlying file
+    /// write returns `EACCES`.
+    #[cfg(unix)]
+    pub fn install_system_trust(&self) -> Result<TrustInstallReport, CaError> {
+        let method = detect_ca_trust_method();
+        install_trust_with_method(self.cert_pem.as_bytes(), method)
+    }
+
+    /// Remove any previously-installed AgentGuard CA from the system trust
+    /// store. Idempotent: succeeds even if no CA was installed.
+    ///
+    /// Removes the well-known anchor file from every standard location
+    /// and re-runs the trust-update tools that are present.
+    #[cfg(unix)]
+    pub fn uninstall_system_trust() -> Result<(), CaError> {
+        uninstall_trust()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Cross-distro trust-store installation
+// ---------------------------------------------------------------------------
+
+/// Filename written into the system anchor directory. Distinct from
+/// [`CA_CERT_FILE`] so the daemon's local copy and the system trust copy
+/// can be distinguished.
+#[cfg(unix)]
+pub const SYSTEM_TRUST_ANCHOR_FILE: &str = "agentguard-ca.crt";
+
+/// Detected mechanism for adding root anchors on this host.
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaTrustMethod {
+    /// Debian / Ubuntu / openSUSE / Alpine — anchor dir
+    /// `/usr/local/share/ca-certificates/` + `update-ca-certificates`.
+    UpdateCaCertificates,
+    /// Fedora / RHEL / CentOS / Rocky — anchor dir
+    /// `/etc/pki/ca-trust/source/anchors/` + `update-ca-trust extract`.
+    UpdateCaTrust,
+    /// Arch / any p11-kit based system — `trust anchor --store <pem>`.
+    TrustAnchor,
+    /// Nothing detected: caller will write to the first existing anchor
+    /// dir and warn the user to run the trust update manually.
+    Manual,
+}
+
+/// Outcome of [`LocalCa::install_system_trust`].
+#[cfg(unix)]
+#[derive(Debug, Clone)]
+pub struct TrustInstallReport {
+    /// Which detection branch was selected.
+    pub method: CaTrustMethod,
+    /// Where the anchor PEM was actually written. `None` for
+    /// [`CaTrustMethod::TrustAnchor`] which doesn't write to a fixed
+    /// location (`trust anchor` manages its own store).
+    pub installed_path: Option<PathBuf>,
+    /// `true` if the trust-store update command (e.g. `update-ca-trust
+    /// extract`) was actually invoked. `false` for the manual fallback.
+    pub trust_update_run: bool,
+}
+
+#[cfg(unix)]
+fn which_available(cmd: &str) -> bool {
+    // Avoid relying on a `which` binary that may not be installed; just
+    // check $PATH directly.
+    std::env::var_os("PATH")
+        .map(|paths| {
+            std::env::split_paths(&paths).any(|p| {
+                let candidate = p.join(cmd);
+                std::fs::metadata(&candidate)
+                    .map(|m| m.is_file())
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// Detect the trust-store mechanism for this host.
+///
+/// Order matters: `update-ca-trust` (Fedora) is checked first because it
+/// is more specific and Fedora ships `update-ca-certificates` as a
+/// thin wrapper in some configurations.
+#[cfg(unix)]
+pub fn detect_ca_trust_method() -> CaTrustMethod {
+    if which_available("update-ca-trust") {
+        return CaTrustMethod::UpdateCaTrust;
+    }
+    if which_available("update-ca-certificates") {
+        return CaTrustMethod::UpdateCaCertificates;
+    }
+    if which_available("trust") {
+        return CaTrustMethod::TrustAnchor;
+    }
+    CaTrustMethod::Manual
+}
+
+#[cfg(unix)]
+fn run_command(cmd: &str, args: &[&str]) -> Result<(), CaError> {
+    use std::process::Command;
+    let status = Command::new(cmd).args(args).status().map_err(|e| {
+        CaError::TrustInstall(format!("failed to spawn `{cmd}`: {e}"))
+    })?;
+    if !status.success() {
+        return Err(CaError::TrustInstall(format!(
+            "`{cmd} {}` exited with {}",
+            args.join(" "),
+            status
+        )));
+    }
+    Ok(())
+}
+
+/// Write the CA PEM to `path` with mode 0644 and ensure the parent dir
+/// exists. Wraps I/O errors as [`CaError::TrustInstall`] so the caller
+/// can present a single error category to users.
+#[cfg(unix)]
+fn write_anchor(path: &Path, pem: &[u8]) -> Result<(), CaError> {
+    use std::os::unix::fs::PermissionsExt;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            CaError::TrustInstall(format!("create_dir_all {:?}: {e}", parent))
+        })?;
+    }
+    std::fs::write(path, pem)
+        .map_err(|e| CaError::TrustInstall(format!("write {:?}: {e}", path)))?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644))
+        .map_err(|e| CaError::TrustInstall(format!("chmod {:?}: {e}", path)))?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn install_trust_with_method(
+    pem: &[u8],
+    method: CaTrustMethod,
+) -> Result<TrustInstallReport, CaError> {
+    match method {
+        CaTrustMethod::UpdateCaCertificates => {
+            let path = PathBuf::from("/usr/local/share/ca-certificates")
+                .join(SYSTEM_TRUST_ANCHOR_FILE);
+            write_anchor(&path, pem)?;
+            run_command("update-ca-certificates", &[])?;
+            tracing::info!(?path, "CA installed via update-ca-certificates");
+            Ok(TrustInstallReport {
+                method,
+                installed_path: Some(path),
+                trust_update_run: true,
+            })
+        }
+        CaTrustMethod::UpdateCaTrust => {
+            let path = PathBuf::from("/etc/pki/ca-trust/source/anchors")
+                .join(SYSTEM_TRUST_ANCHOR_FILE);
+            write_anchor(&path, pem)?;
+            run_command("update-ca-trust", &["extract"])?;
+            tracing::info!(?path, "CA installed via update-ca-trust");
+            Ok(TrustInstallReport {
+                method,
+                installed_path: Some(path),
+                trust_update_run: true,
+            })
+        }
+        CaTrustMethod::TrustAnchor => {
+            // `trust anchor --store` accepts a PEM file and copies it
+            // into its own management store. We must hand it a real
+            // filename, so we stage the PEM in /tmp first.
+            let tmp = std::env::temp_dir().join("agentguard-ca-anchor.crt");
+            write_anchor(&tmp, pem)?;
+            let res = run_command("trust", &["anchor", "--store", &tmp.to_string_lossy()]);
+            // Best-effort cleanup of the staging file regardless of result.
+            let _ = std::fs::remove_file(&tmp);
+            res?;
+            tracing::info!("CA installed via `trust anchor`");
+            Ok(TrustInstallReport {
+                method,
+                installed_path: None,
+                trust_update_run: true,
+            })
+        }
+        CaTrustMethod::Manual => {
+            // Last-resort fallback: write to the first anchor directory
+            // that already exists. Don't run any update tool — we already
+            // know none are installed. Caller must surface the warning.
+            let candidates: [PathBuf; 3] = [
+                PathBuf::from("/usr/local/share/ca-certificates"),
+                PathBuf::from("/etc/pki/ca-trust/source/anchors"),
+                PathBuf::from("/etc/ssl/certs"),
+            ];
+            for dir in &candidates {
+                if dir.is_dir() {
+                    let path = dir.join(SYSTEM_TRUST_ANCHOR_FILE);
+                    write_anchor(&path, pem)?;
+                    tracing::warn!(
+                        ?path,
+                        "CA written to {:?} but no trust-update tool was found. \
+                         Run the appropriate command for your distro manually \
+                         (e.g. `update-ca-trust extract` or `trust anchor`).",
+                        path
+                    );
+                    return Ok(TrustInstallReport {
+                        method,
+                        installed_path: Some(path),
+                        trust_update_run: false,
+                    });
+                }
+            }
+            Err(CaError::TrustInstall(
+                "no supported trust-store directory exists on this host \
+                 (tried /usr/local/share/ca-certificates, /etc/pki/ca-trust/source/anchors, \
+                 /etc/ssl/certs); install ca-certificates or p11-kit-trust"
+                    .into(),
+            ))
+        }
+    }
+}
+
+#[cfg(unix)]
+fn uninstall_trust() -> Result<(), CaError> {
+    let candidates: [PathBuf; 4] = [
+        PathBuf::from("/usr/local/share/ca-certificates").join(SYSTEM_TRUST_ANCHOR_FILE),
+        PathBuf::from("/etc/pki/ca-trust/source/anchors").join(SYSTEM_TRUST_ANCHOR_FILE),
+        PathBuf::from("/etc/ssl/certs").join(SYSTEM_TRUST_ANCHOR_FILE),
+        // Older shell installer wrote `agentguard.crt` (no `-ca` suffix).
+        // Remove that too so upgrades don't leave a stale trust anchor.
+        PathBuf::from("/etc/pki/ca-trust/source/anchors/agentguard.crt"),
+    ];
+
+    let mut removed_any = false;
+    for path in &candidates {
+        if path.exists() {
+            match std::fs::remove_file(path) {
+                Ok(()) => {
+                    tracing::info!(?path, "removed CA anchor");
+                    removed_any = true;
+                }
+                Err(e) => {
+                    tracing::warn!(?path, error = %e, "failed to remove CA anchor");
+                }
+            }
+        }
+    }
+
+    if !removed_any {
+        tracing::info!("uninstall_system_trust: nothing to remove");
+        // No anchor was actually deleted — running the trust update
+        // tool would only generate noise (and require root). Skip it.
+        return Ok(());
+    }
+
+    // Re-run whichever update tool is present so the trust store is
+    // refreshed after an actual removal. Errors are non-fatal — the
+    // file is already gone.
+    if which_available("update-ca-trust") {
+        let _ = run_command("update-ca-trust", &["extract"]);
+    }
+    if which_available("update-ca-certificates") {
+        let _ = run_command("update-ca-certificates", &[]);
+    }
+    Ok(())
 }
 
 fn read_file(path: &Path) -> Result<String, CaError> {
@@ -337,6 +617,84 @@ mod tests {
         let pem = ca.cert_pem();
         assert!(pem.len() > 500, "cert too small: {} bytes", pem.len());
         assert!(pem.contains("-----BEGIN CERTIFICATE-----"));
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 5 — trust-store install tests
+    // ------------------------------------------------------------------
+
+    /// `detect_ca_trust_method` always returns one of the four variants
+    /// without panicking, regardless of which tools are present.
+    #[cfg(unix)]
+    #[test]
+    fn detect_ca_trust_method_returns_some_variant() {
+        let m = detect_ca_trust_method();
+        // The only invariant we can assert without mocking the host is
+        // that the call doesn't panic and returns a known variant.
+        assert!(matches!(
+            m,
+            CaTrustMethod::UpdateCaCertificates
+                | CaTrustMethod::UpdateCaTrust
+                | CaTrustMethod::TrustAnchor
+                | CaTrustMethod::Manual
+        ));
+    }
+
+    /// `write_anchor` creates the parent directory, writes the file, and
+    /// applies mode 0644. This exercises the I/O path without invoking
+    /// any external trust-update tool.
+    #[cfg(unix)]
+    #[test]
+    fn write_anchor_creates_parent_dir_and_sets_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("nested/dir/agentguard-ca.crt");
+
+        write_anchor(&path, b"-----BEGIN CERTIFICATE-----\nfoo\n-----END CERTIFICATE-----\n")
+            .expect("write_anchor");
+
+        assert!(path.is_file(), "anchor file not created at {:?}", path);
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644, "anchor must be 0644, got {:o}", mode);
+    }
+
+    /// `which_available` returns `false` for a definitely-missing binary
+    /// and `true` for a binary that exists in PATH (e.g. `sh`).
+    #[cfg(unix)]
+    #[test]
+    fn which_available_basic_sanity() {
+        assert!(
+            !which_available("agentguard-totally-missing-binary-xyzzy"),
+            "ghost binary unexpectedly found"
+        );
+        // /bin/sh (or /usr/bin/sh) is part of POSIX — required on every
+        // Linux host that can build this crate.
+        assert!(which_available("sh"), "`sh` should be in PATH");
+    }
+
+    /// `uninstall_system_trust` is idempotent: it succeeds even when no
+    /// CA was installed.
+    #[cfg(unix)]
+    #[test]
+    fn uninstall_system_trust_is_idempotent_when_no_anchor_present() {
+        // Unprivileged test — we don't actually have write access to
+        // `/etc/pki/...`. uninstall_trust silently swallows missing-file
+        // errors, so this should always succeed.
+        LocalCa::uninstall_system_trust().expect("uninstall must be idempotent");
+    }
+
+    /// The system trust filename is constant and matches the one used by
+    /// the shell installer scripts.
+    #[cfg(unix)]
+    #[test]
+    fn system_trust_anchor_file_matches_shell_installer() {
+        // packaging/install.sh calls
+        //     sudo cp "$ca_cert" /etc/pki/ca-trust/source/anchors/agentguard.crt
+        //         (legacy filename)
+        // The Rust-side install_system_trust uses agentguard-ca.crt
+        // and `uninstall_trust` removes BOTH so an upgrade cleans up
+        // both legacy and new anchor names.
+        assert_eq!(SYSTEM_TRUST_ANCHOR_FILE, "agentguard-ca.crt");
     }
 
     #[test]

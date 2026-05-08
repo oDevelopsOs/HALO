@@ -11,15 +11,17 @@
 //!
 //! Con feature `ebpf` desactivada, este módulo no se compila.
 
+#![allow(deprecated)]
+
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{broadcast, RwLock};
 use tracing::{debug, error, info, warn};
 
 use include_bytes_aligned::include_bytes_aligned;
 
 use agentguard_common::AgentSpawnEvent;
-use agentguard_core::config::{Config, KnownAgent};
+use agentguard_core::config::Config;
 use agentguard_core::SecurityEvent;
 
 use crate::sandbox::SandboxLauncher;
@@ -35,6 +37,10 @@ pub struct ProcessWatcher {
 impl ProcessWatcher {
     /// Carga el programa eBPF y popula el mapa con los agentes conocidos.
     pub fn load(config: &Config) -> Result<Self, anyhow::Error> {
+        if PROCESS_EXEC_BPF.len() < 16 {
+            anyhow::bail!("eBPF bytecode not compiled — run ./scripts/build-ebpf.sh");
+        }
+
         let mut bpf = aya::BpfLoader::new()
             .btf(aya::Btf::from_sys_fs().ok().as_ref())
             .load(PROCESS_EXEC_BPF)?;
@@ -78,7 +84,11 @@ impl ProcessWatcher {
 
     /// Loop principal: lee eventos del ring buffer y los procesa.
     /// Spawneado como tarea tokio separada.
-    pub async fn run(mut self, config: Arc<RwLock<Config>>, event_tx: mpsc::Sender<SecurityEvent>) {
+    pub async fn run(
+        mut self,
+        config: Arc<RwLock<Config>>,
+        event_tx: broadcast::Sender<SecurityEvent>,
+    ) {
         let mut ring_buf = match self.bpf.map_mut("AGENT_SPAWN_EVENTS") {
             Some(map) => match aya::maps::RingBuf::try_from(map) {
                 Ok(rb) => rb,
@@ -125,7 +135,7 @@ async fn handle_agent_spawn(
     pid: u32,
     comm: String,
     config: Arc<RwLock<Config>>,
-    event_tx: mpsc::Sender<SecurityEvent>,
+    event_tx: broadcast::Sender<SecurityEvent>,
 ) {
     // ── PID reuse guard: verify comm before acting ──
     // By the time this async handler runs, the kernel may have recycled
@@ -187,15 +197,13 @@ async fn handle_agent_spawn(
     );
 
     // Emitir evento AgentDetected
-    let _ = event_tx
-        .send(SecurityEvent::AgentDetected {
-            pid,
-            agent_name: comm.clone(),
-            cwd: cwd.clone(),
-            mode: mode.clone(),
-            timestamp: unix_ts(),
-        })
-        .await;
+    let _ = event_tx.send(SecurityEvent::AgentDetected {
+        pid,
+        agent_name: comm.clone(),
+        cwd: cwd.clone(),
+        mode: mode.clone(),
+        timestamp: unix_ts(),
+    });
 
     match mode.as_str() {
         "monitor" => {
@@ -217,15 +225,13 @@ async fn handle_agent_spawn(
                         sandbox_pid,
                         "agent relaunched in sandbox"
                     );
-                    let _ = event_tx
-                        .send(SecurityEvent::AgentSandboxed {
-                            original_pid: pid,
-                            sandbox_pid,
-                            agent_name: comm,
-                            cwd,
-                            timestamp: unix_ts(),
-                        })
-                        .await;
+                    let _ = event_tx.send(SecurityEvent::AgentSandboxed {
+                        original_pid: pid,
+                        sandbox_pid,
+                        agent_name: comm,
+                        cwd,
+                        timestamp: unix_ts(),
+                    });
                 }
                 Err(e) => {
                     error!(

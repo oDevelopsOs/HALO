@@ -165,7 +165,8 @@ keep_days = 30
     }
 
     # Añadir CA al trust store
-    $caCert = Join-Path $ConfigDir "ca\root-cert.pem"
+    # NOTE: filename must match `CA_CERT_FILE` in agentguard-core/src/ca.rs
+    $caCert = Join-Path $ConfigDir "ca\root.crt"
     if (Test-Path $caCert) {
         Write-Info "Adding AgentGuard CA to system trust store..."
         certutil -addstore -f "ROOT" $caCert 2>$null

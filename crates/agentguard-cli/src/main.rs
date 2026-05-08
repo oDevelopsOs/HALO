@@ -196,6 +196,10 @@ use std::path::PathBuf;
 #[cfg(not(windows))]
 use agentguard_common::IPC_SOCKET_PATH;
 use agentguard_common::{IpcCommand, IpcResponse, IPC_PROTOCOL_VERSION};
+use agentguard_core::{
+    self,
+    smart_protect::{generate_smart_suggestions, ProtectionSuggestion},
+};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use transport::connect;
@@ -227,9 +231,13 @@ enum Command {
 
     /// Protect a directory or file
     Protect {
-        path: String,
+        path: Option<String>,
         #[arg(long, help = "Only watch, don't block (userspace only)")]
         watch_only: bool,
+        #[arg(long, help = "Apply the recommended protection profile (all groups)")]
+        all: bool,
+        #[arg(long, help = "Protect all paths in a specific group")]
+        group: Option<String>,
     },
 
     /// Remove protection from a path
@@ -281,7 +289,25 @@ enum Command {
     Check,
 
     /// Interactive first-time setup wizard
-    Setup,
+    Setup {
+        #[arg(long, help = "Run intelligent auto-detection setup")]
+        smart: bool,
+        #[arg(
+            long,
+            help = "Auto-apply all High+Critical suggestions (non-interactive)"
+        )]
+        yes: bool,
+    },
+
+    /// Show smart protection suggestions without applying
+    Recommend {
+        #[arg(long, help = "Output as JSON")]
+        json: bool,
+    },
+
+    /// List or manage protection profile groups
+    #[command(subcommand)]
+    Groups(GroupsCmd),
 
     /// Check for and install updated versions
     Update {
@@ -302,6 +328,28 @@ enum Command {
 
     /// Fase 5: Show protection statistics
     Stats,
+
+    /// Manage the local CA used by the DLP HTTPS MITM proxy
+    #[command(subcommand)]
+    Ca(CaCmd),
+}
+
+/// Subcommands for `agentguard ca`.
+///
+/// All three actions run **locally** — they do not require the daemon to
+/// be running. `install` and `uninstall` need root because they touch
+/// `/etc/...`. `show` works without privileges.
+#[derive(Subcommand)]
+enum CaCmd {
+    /// Install the local CA root certificate into the system trust store.
+    /// Distro-agnostic: detects update-ca-trust / update-ca-certificates /
+    /// trust anchor / manual fallback. Requires root.
+    Install,
+    /// Remove the local CA from the system trust store. Requires root.
+    Uninstall,
+    /// Show the path and SHA-256 fingerprint of the local CA root.
+    /// Does not require root.
+    Show,
 }
 
 #[derive(Subcommand)]
@@ -312,8 +360,20 @@ enum RulesCmd {
         #[arg(long)]
         watch_only: bool,
     },
+    /// Remove paths from protection list
+    Remove { paths: Vec<String> },
     /// List all protection rules
     List,
+}
+
+#[derive(Subcommand)]
+enum GroupsCmd {
+    /// List all protection profile groups
+    List,
+    /// Enable all paths from a profile group
+    Enable { name: String },
+    /// Disable all paths from a profile group
+    Disable { name: String },
 }
 
 #[derive(Subcommand)]
@@ -361,7 +421,23 @@ fn build_command(cmd: Command) -> IpcCommand {
     match cmd {
         Command::Status => IpcCommand::Status,
         Command::Ping => IpcCommand::Ping,
-        Command::Protect { path, watch_only } => IpcCommand::Protect { path, watch_only },
+        Command::Protect {
+            path,
+            watch_only,
+            all,
+            group,
+        } => {
+            if all {
+                unreachable!("protect --all handled locally")
+            }
+            if group.is_some() {
+                unreachable!("protect --group handled locally")
+            }
+            IpcCommand::Protect {
+                path: path.expect("path required"),
+                watch_only,
+            }
+        }
         Command::Unprotect { path } => IpcCommand::Unprotect { path },
         Command::Snapshot(SnapshotCmd::Create { label }) => IpcCommand::SnapshotCreate { label },
         Command::Snapshot(SnapshotCmd::List) => IpcCommand::SnapshotList,
@@ -388,9 +464,13 @@ fn build_command(cmd: Command) -> IpcCommand {
         Command::Rules(RulesCmd::List) => IpcCommand::RulesList,
         Command::Stats => IpcCommand::Stats,
         Command::Rules(RulesCmd::Add { .. })
+        | Command::Rules(RulesCmd::Remove { .. })
         | Command::Check
-        | Command::Setup
+        | Command::Setup { .. }
+        | Command::Recommend { .. }
+        | Command::Groups(_)
         | Command::Update { .. }
+        | Command::Ca(_)
         | Command::Init { .. } => {
             unreachable!("build_command called with local-only command") // unwrap-ok: filtered before IPC
         }
@@ -435,6 +515,38 @@ fn fmt_ts(ts: u64) -> String {
             format!("{days}d {h:02}:{m:02}h ago")
         }
         None => "unknown".into(),
+    }
+}
+
+fn fmt_ts_short(ts: u64) -> String {
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    match SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(ts)) {
+        Some(t) => {
+            let d = t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+            let days = d / 86400;
+            if days > 0 {
+                format!("{days}d ago")
+            } else {
+                let h = d / 3600;
+                if h > 0 {
+                    format!("{h}h ago")
+                } else {
+                    let m = (d % 3600) / 60;
+                    format!("{m}m ago")
+                }
+            }
+        }
+        None => "?".into(),
+    }
+}
+
+fn fmt_duration(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else {
+        format!("{}h{}m", secs / 3600, (secs % 3600) / 60)
     }
 }
 
@@ -564,9 +676,121 @@ fn format_response(response: IpcResponse) {
                 green(&format!("Agent launched in sandbox (pid={sandbox_pid})"))
             );
         }
-        // Fase 5: new IPC responses (for agents/rules/stats commands)
-        _other => {
-            eprintln!("{} protocol v2 response — update CLI", yellow("⚠"));
+        IpcResponse::AgentsList { agents } => {
+            if agents.is_empty() {
+                println!("  No agents tracked yet.");
+                return;
+            }
+            println!("  {}", bold("Tracked AI Agents"));
+            println!(
+                "  {:<16} {:<14} {:<14} {:<10} {:<10} SANDBOX",
+                "NAME", "FIRST SEEN", "LAST SEEN", "SESSIONS", "VIOLATIONS"
+            );
+            println!("  {}", dim(&"-".repeat(80)));
+            for a in &agents {
+                println!(
+                    "  {:<16} {:<14} {:<14} {:>8}   {:>8}   {}",
+                    a.agent_name,
+                    fmt_ts_short(a.first_seen as u64),
+                    fmt_ts_short(a.last_seen as u64),
+                    a.total_sessions,
+                    a.total_violations,
+                    fmt_duration(a.total_sandbox_seconds as u64),
+                );
+            }
+        }
+        IpcResponse::RulesList { rules } => {
+            if rules.is_empty() {
+                println!("  No protection rules defined.");
+                return;
+            }
+            println!("  {}", bold("Protection Rules"));
+            println!("  {:<6} {:<40} ADDED", "KIND", "PATH");
+            println!("  {}", dim(&"-".repeat(60)));
+            for r in &rules {
+                let kind = if r.watch_only { "watch" } else { "block " };
+                println!(
+                    "  {kind:<6} {:<40} {}",
+                    r.path,
+                    fmt_ts_short(r.added_at as u64),
+                );
+            }
+        }
+        IpcResponse::StatsData {
+            total_incidents,
+            violations_24h,
+            agents_tracked,
+        } => {
+            println!("  {}", bold("Protection Statistics"));
+            println!("  Total incidents:     {}", total_incidents);
+            println!("  Violations (24h):    {}", violations_24h);
+            println!("  Agents tracked:      {}", agents_tracked);
+        }
+        IpcResponse::AgentsShow { agent, sessions } => {
+            println!("  {}", bold(&format!("Agent: {}", agent.agent_name)));
+            println!(
+                "    First seen: {}  Last seen: {}",
+                fmt_ts_short(agent.first_seen as u64),
+                fmt_ts_short(agent.last_seen as u64),
+            );
+            println!(
+                "    Sessions: {}  Violations: {}  Sandbox time: {}",
+                agent.total_sessions,
+                agent.total_violations,
+                fmt_duration(agent.total_sandbox_seconds as u64),
+            );
+            if !sessions.is_empty() {
+                println!("    {}", bold("Recent sessions:"));
+                for s in &sessions {
+                    let end = s
+                        .ended_at
+                        .map(|e| fmt_ts_short(e as u64))
+                        .unwrap_or_else(|| "active".into());
+                    println!(
+                        "      {}  pid={}  mode={}  started={}  ended={}",
+                        s.id,
+                        s.pid.map(|p| p.to_string()).unwrap_or_else(|| "?".into()),
+                        s.sandbox_mode.as_deref().unwrap_or("?"),
+                        fmt_ts_short(s.started_at as u64),
+                        end,
+                    );
+                }
+            }
+        }
+        IpcResponse::SmartSuggestions { suggestions } => {
+            println!("  {}", bold("Smart Protection Suggestions"));
+            println!();
+            for s in &suggestions {
+                println!(
+                    "  {} {:<40} [{}] {}",
+                    match s.risk_level.as_str() {
+                        "critical" => red("●"),
+                        "high" => yellow("●"),
+                        _ => dim("○"),
+                    },
+                    s.path,
+                    s.group,
+                    s.reason,
+                );
+            }
+        }
+        IpcResponse::ProfilesList { profiles } => {
+            println!("  {}", bold("Protection Profiles"));
+            println!();
+            for p in &profiles {
+                let status = if p.enabled {
+                    green("active")
+                } else {
+                    dim("inactive")
+                };
+                println!(
+                    "  {} {:<20} {} paths ({})",
+                    green("●"),
+                    p.name,
+                    p.path_count,
+                    status,
+                );
+            }
         }
     }
 }
@@ -614,7 +838,7 @@ snapshot_on_violation = true
 
 # ── v2.1: AI Agent Sandbox ──────────────────────────────────
 [sandbox]
-modo_por_defecto = "sandbox"
+modo_por_defecto = "ebpf"
 auto_detectar_agentes = true
 montar_solo_proyecto = true
 morir_con_padre = true
@@ -653,6 +877,28 @@ action = "block"
 auto_check = true
 auto_install = false
 channel = "stable"
+
+# ── v2.2: Smart Protection ──────────────────────────────────
+[smart_protection]
+enabled = true
+auto_suggest_on_start = true
+
+[[smart_protection.profiles]]
+name = "Personal"
+paths = ["~/Documents", "~/Desktop", "~/Pictures", "~/Downloads", "~/Videos"]
+
+[[smart_protection.profiles]]
+name = "Desarrollo"
+paths = ["~/Projects", "~/src", "~/code", "~/workspace", "~/dev"]
+
+[[smart_protection.profiles]]
+name = "Secretos"
+paths = ["~/.ssh", "~/.gnupg", "~/.aws", "~/.netrc", "~/.git-credentials", "~/.docker/config.json"]
+
+[[smart_protection.profiles]]
+name = "AI Workspaces"
+auto = true
+paths = []
 "#;
 
 fn handle_init(output: Option<PathBuf>, defaults: bool) -> Result<()> {
@@ -751,6 +997,419 @@ fn handle_setup() -> Result<()> {
     Ok(())
 }
 
+fn handle_smart_setup(yes: bool) -> Result<()> {
+    println!();
+    println!("  {}", bold("AgentGuard — Configuración Inteligente"));
+    println!();
+
+    let sp = agentguard_core::SmartProtection::default();
+    let suggestions = generate_smart_suggestions(&sp);
+
+    if suggestions.is_empty() {
+        println!(
+            "  {} No se detectaron rutas que necesiten protección.",
+            yellow("⚠")
+        );
+        println!("    Prueba: agentguard protect <ruta>");
+        return Ok(());
+    }
+
+    let detected_agents: Vec<&String> = suggestions
+        .iter()
+        .flat_map(|s| &s.active_agents)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    if !detected_agents.is_empty() {
+        println!(
+            "  Detecté {} agente{} AI activo{}:",
+            detected_agents.len(),
+            if detected_agents.len() > 1 { "s" } else { "" },
+            if detected_agents.len() > 1 { "s" } else { "" }
+        );
+        for agent in &detected_agents {
+            let workspaces: Vec<_> = suggestions
+                .iter()
+                .filter(|s| s.active_agents.contains(*agent) && s.group == "AI Workspaces")
+                .collect();
+            if !workspaces.is_empty() {
+                println!("  • {} → trabajando en:", agent);
+                for ws in &workspaces {
+                    println!("     - {}", ws.path.display());
+                }
+            } else {
+                println!("  • {} → sesión activa", agent);
+            }
+        }
+        println!();
+    }
+
+    let high_or_critical: Vec<&ProtectionSuggestion> = suggestions
+        .iter()
+        .filter(|s| s.risk_level >= agentguard_core::RiskLevel::High)
+        .collect();
+
+    let rest: Vec<&ProtectionSuggestion> = suggestions
+        .iter()
+        .filter(|s| s.risk_level < agentguard_core::RiskLevel::High)
+        .collect();
+
+    if !high_or_critical.is_empty() {
+        println!("  Rutas de alto riesgo detectadas:");
+        for s in &high_or_critical {
+            let icon = match s.risk_level {
+                agentguard_core::RiskLevel::Critical => red("●"),
+                _ => yellow("●"),
+            };
+            let secrets = if s.contains_secrets {
+                format!(" {}", dim("[secretos]"))
+            } else {
+                String::new()
+            };
+            println!(
+                "  {} {:<30} [{}{}]{}",
+                icon,
+                s.path.display(),
+                s.group,
+                if !s.reason.is_empty() {
+                    format!(" — {}", s.reason)
+                } else {
+                    String::new()
+                },
+                secrets,
+            );
+        }
+        println!();
+    }
+
+    let total = high_or_critical.len() + rest.len();
+    println!(
+        "  Perfil recomendado: \"Máxima Protección\" ({} ruta{})",
+        total,
+        if total != 1 { "s" } else { "" }
+    );
+
+    if yes {
+        println!();
+        println!("  Aplicando sugerencias de alto riesgo...");
+        return apply_suggestions(&high_or_critical);
+    }
+
+    print!("  ¿Aplicar ahora? [Y/n/detalles] ");
+    use std::io::{self, BufRead, Write};
+    io::stdout().flush().ok();
+    let stdin = io::stdin();
+    let line = stdin
+        .lock()
+        .lines()
+        .next()
+        .unwrap_or(Ok("y".into()))
+        .unwrap_or("y".into());
+
+    match line.trim().to_lowercase().as_str() {
+        "n" => {
+            println!();
+            println!("  Ok. Puedes proteger manualmente:");
+            println!("    agentguard protect <ruta>");
+            println!("    agentguard recommend  (para ver sugerencias de nuevo)");
+            return Ok(());
+        }
+        "detalles" | "d" | "details" => {
+            println!();
+            for s in &suggestions {
+                println!(
+                    "  {} {:<40} {} {}",
+                    match s.risk_level {
+                        agentguard_core::RiskLevel::Critical => red("●"),
+                        agentguard_core::RiskLevel::High => yellow("●"),
+                        _ => dim("○"),
+                    },
+                    s.path.display(),
+                    dim(&format!("[{}]", s.group)),
+                    s.reason
+                );
+            }
+            println!();
+            print!("  ¿Aplicar todas las de alto riesgo? [Y/n] ");
+            io::stdout().flush().ok();
+            let line2 = stdin
+                .lock()
+                .lines()
+                .next()
+                .unwrap_or(Ok("y".into()))
+                .unwrap_or("y".into());
+            if line2.trim().to_lowercase() == "n" {
+                return Ok(());
+            }
+        }
+        _ => {}
+    }
+
+    println!();
+    apply_suggestions(&high_or_critical)
+}
+
+fn apply_suggestions(suggestions: &[&ProtectionSuggestion]) -> Result<()> {
+    let socket_path = std::env::var("AGENTGUARD_SOCKET")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(default_socket_path);
+
+    let mut applied = 0usize;
+    let mut skipped = 0usize;
+
+    for s in suggestions {
+        let path_str = s.path.display().to_string();
+        let mut stream = match connect(&socket_path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("  {} No se pudo proteger {}: {e}", yellow("⚠"), path_str);
+                skipped += 1;
+                continue;
+            }
+        };
+
+        let cmd = IpcCommand::AddProtectedPath {
+            path: path_str.clone(),
+        };
+        let json = serde_json::to_string(&cmd)?;
+        writeln!(stream, "{json}")?;
+        stream.flush()?;
+
+        let mut reader = BufReader::new(&mut stream);
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => {
+                skipped += 1;
+                continue;
+            }
+            _ => {}
+        }
+
+        let resp: IpcResponse = match serde_json::from_str(line.trim()) {
+            Ok(r) => r,
+            Err(_) => {
+                skipped += 1;
+                continue;
+            }
+        };
+
+        match resp {
+            IpcResponse::Ok { .. } => {
+                println!("  {} {}", green("✓"), path_str);
+                applied += 1;
+            }
+            IpcResponse::Error { message } => {
+                eprintln!("  {} {}: {message}", red("✗"), path_str);
+                skipped += 1;
+            }
+            _ => {
+                skipped += 1;
+            }
+        }
+    }
+
+    println!();
+    println!("  {} {} rutas protegidas", green("✓"), applied);
+    if skipped > 0 {
+        println!("  {} {} no se pudieron proteger", yellow("⚠"), skipped);
+    }
+    println!();
+    println!(
+        "  {} {}",
+        green("✓"),
+        bold("¡Protección inteligente activada!")
+    );
+    println!("  Prueba:  {}", bold("agentguard status"));
+    println!("          {}", bold("agentguard recommend"));
+    Ok(())
+}
+
+fn handle_recommend(json: bool) -> Result<()> {
+    let sp = agentguard_core::SmartProtection::default();
+    let suggestions = generate_smart_suggestions(&sp);
+
+    if json {
+        let output: Vec<serde_json::Value> = suggestions
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "path": s.path.display().to_string(),
+                    "group": s.group,
+                    "reason": s.reason,
+                    "risk_level": s.risk_level.to_string(),
+                    "size_bytes": s.size_bytes,
+                    "contains_secrets": s.contains_secrets,
+                    "is_git_repo": s.is_git_repo,
+                    "active_agents": s.active_agents,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&output)?);
+        return Ok(());
+    }
+
+    println!();
+    println!("  {}", bold("AgentGuard — Sugerencias de Protección"));
+    println!();
+
+    if suggestions.is_empty() {
+        println!("  No se detectaron rutas que proteger.");
+        return Ok(());
+    }
+
+    for s in &suggestions {
+        let icon = match s.risk_level {
+            agentguard_core::RiskLevel::Critical => red("●"),
+            agentguard_core::RiskLevel::High => yellow("●"),
+            agentguard_core::RiskLevel::Medium => dim("○"),
+            agentguard_core::RiskLevel::Low => dim("·"),
+        };
+        let agents = if !s.active_agents.is_empty() {
+            format!(" [{}]", s.active_agents.join(", "))
+        } else {
+            String::new()
+        };
+        println!(
+            "  {} {:<40} {:<16} {}{}",
+            icon,
+            s.path.display(),
+            dim(&format!("[{}]", s.group)),
+            s.reason,
+            agents
+        );
+    }
+
+    println!();
+    println!("  {}", dim("Aplica con:  agentguard setup --smart --yes"));
+    Ok(())
+}
+
+fn handle_groups_list() -> Result<()> {
+    let sp = agentguard_core::SmartProtection::default();
+    println!();
+    println!("  {}", bold("Perfiles de Protección"));
+    println!();
+
+    for profile in &sp.profiles {
+        let icon = if profile.auto {
+            blue("◆")
+        } else {
+            green("●")
+        };
+        let auto_label = if profile.auto {
+            dim(" (detección automática)")
+        } else {
+            String::new()
+        };
+        println!("  {} {}{}", icon, bold(&profile.name), auto_label);
+        for p in &profile.paths {
+            println!("     {}", p.display());
+        }
+        if profile.paths.is_empty() && !profile.auto {
+            println!("     (sin rutas configuradas)");
+        }
+    }
+
+    println!();
+    println!(
+        "  {}",
+        dim("Activa un grupo:  agentguard groups enable <nombre>")
+    );
+    println!("  {}", dim("Protege todo:     agentguard protect --all"));
+    Ok(())
+}
+
+fn handle_protect_all() -> Result<()> {
+    let sp = agentguard_core::SmartProtection::default();
+    let suggestions = generate_smart_suggestions(&sp);
+    let high: Vec<&ProtectionSuggestion> = suggestions
+        .iter()
+        .filter(|s| s.risk_level >= agentguard_core::RiskLevel::High)
+        .collect();
+
+    if high.is_empty() {
+        println!("  No hay sugerencias de alto riesgo que aplicar.");
+        return Ok(());
+    }
+
+    println!();
+    println!("  Aplicando {} rutas...", high.len());
+    apply_suggestions(&high)
+}
+
+fn handle_protect_group(name: &str) -> Result<()> {
+    let sp = agentguard_core::SmartProtection::default();
+    let profile = sp
+        .profiles
+        .iter()
+        .find(|p| p.name.to_lowercase() == name.to_lowercase());
+
+    let profile = match profile {
+        Some(p) => p,
+        None => {
+            println!("  Perfil '{name}' no encontrado.");
+            println!("  Usa 'agentguard groups' para ver los disponibles.");
+            return Ok(());
+        }
+    };
+
+    if profile.paths.is_empty() {
+        println!(
+            "  El perfil '{}' no tiene rutas configuradas.",
+            profile.name
+        );
+        if profile.auto {
+            println!("  Es un perfil automático — usa 'agentguard setup --smart'.");
+        }
+        return Ok(());
+    }
+
+    println!();
+    println!(
+        "  Protegiendo grupo '{}': {} rutas",
+        profile.name,
+        profile.paths.len()
+    );
+
+    let suggestions: Vec<ProtectionSuggestion> = profile
+        .paths
+        .iter()
+        .map(|p| {
+            let expanded = if let Some(s) = p.to_str() {
+                if let Some(rest) = s.strip_prefix("~/") {
+                    dirs::home_dir()
+                        .map(|h| h.join(rest))
+                        .unwrap_or_else(|| p.clone())
+                } else {
+                    p.clone()
+                }
+            } else {
+                p.clone()
+            };
+            ProtectionSuggestion {
+                path: expanded,
+                group: profile.name.clone(),
+                reason: String::new(),
+                risk_level: agentguard_core::RiskLevel::Medium,
+                size_bytes: 0,
+                file_count: 0,
+                contains_secrets: false,
+                is_git_repo: false,
+                active_agents: Vec::new(),
+            }
+        })
+        .collect();
+
+    let refs: Vec<&ProtectionSuggestion> = suggestions.iter().collect();
+    apply_suggestions(&refs)
+}
+
+fn blue(s: &str) -> String {
+    format!("\x1b[34m{s}\x1b[0m")
+}
+
 fn handle_check() -> Result<()> {
     println!();
     println!("  {}", bold("AgentGuard — System Capabilities Check"));
@@ -794,15 +1453,47 @@ fn handle_check() -> Result<()> {
             }
         );
         println!();
-
         let effective = if bwrap && landlock {
             "hybrid"
         } else if bwrap {
-            "sandbox"
+            "transparent"
         } else {
-            "monitor"
+            "ebpf (kernel blocking without sandbox)"
         };
+
+        // Check for compiled eBPF bytecode
+        let bpffs = std::path::Path::new("/sys/fs/bpf").is_dir();
+        let ebpf_bytecode = check_ebpf_bytecode();
+
+        let guard_level = if ebpf && ebpf_bytecode && bpffs {
+            "kernel-level blocking (eBPF LSM)"
+        } else if ebpf && !ebpf_bytecode {
+            "userspace observation (eBPF kernel available but bytecode not compiled — run ./scripts/build-ebpf.sh)"
+        } else if ebpf && !bpffs {
+            "userspace observation (eBPF kernel available but bpffs not mounted — mount -t bpffs bpffs /sys/fs/bpf)"
+        } else {
+            effective
+        };
+
+        println!(
+            "  bpffs:     {}",
+            if bpffs {
+                green("mounted")
+            } else {
+                yellow("not mounted — mount -t bpffs bpffs /sys/fs/bpf")
+            }
+        );
+        println!(
+            "  eBPF bpf.o: {}",
+            if ebpf_bytecode {
+                green("compiled")
+            } else {
+                yellow("not compiled — run ./scripts/build-ebpf.sh")
+            }
+        );
+        println!();
         println!("  Effective mode: {}", bold(effective));
+        println!("  Guard level:    {}", bold(guard_level));
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -839,6 +1530,18 @@ fn check_landlock_kernel() -> bool {
         }
     }
     false
+}
+
+fn check_ebpf_bytecode() -> bool {
+    let workspace = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let ebpf_dir = workspace.join("target/ebpf");
+    ebpf_dir.join("file_guard").is_file()
+        && ebpf_dir.join("net_guard").is_file()
+        && ebpf_dir.join("process_exec").is_file()
 }
 
 fn handle_update(check_only: bool) -> Result<()> {
@@ -907,13 +1610,12 @@ fn handle_update(check_only: bool) -> Result<()> {
 
 /// Fase 5: Bulk-add protection rules via IPC.
 fn handle_rules_add(paths: &[String]) -> Result<()> {
-    let socket_path = std::env::var("AGENTGUARD_SOCKET")
-        .ok()
-        .map(PathBuf::from)
-        .unwrap_or_else(default_socket_path);
-    let mut stream = connect(&socket_path)?;
-
     for path in paths {
+        let socket_path = std::env::var("AGENTGUARD_SOCKET")
+            .ok()
+            .map(PathBuf::from)
+            .unwrap_or_else(default_socket_path);
+        let mut stream = connect(&socket_path)?;
         let cmd = IpcCommand::AddProtectedPath { path: path.clone() };
         let json = serde_json::to_string(&cmd)?;
         writeln!(stream, "{json}")?;
@@ -932,27 +1634,249 @@ fn handle_rules_add(paths: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Fase 6: Bulk-remove protection rules via IPC.
+fn handle_rules_remove(paths: &[String]) -> Result<()> {
+    for path in paths {
+        let socket_path = std::env::var("AGENTGUARD_SOCKET")
+            .ok()
+            .map(PathBuf::from)
+            .unwrap_or_else(default_socket_path);
+        let mut stream = connect(&socket_path)?;
+        let cmd = IpcCommand::Unprotect { path: path.clone() };
+        let json = serde_json::to_string(&cmd)?;
+        writeln!(stream, "{json}")?;
+        stream.flush()?;
+
+        let mut reader = BufReader::new(&mut stream);
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        let resp: IpcResponse = serde_json::from_str(line.trim())?;
+        match resp {
+            IpcResponse::Ok { message } => println!("  {} {}", green("✓"), message),
+            IpcResponse::Error { message } => eprintln!("  {} {}: {}", red("✗"), path, message),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+// ── CA management (local-only, no IPC) ─────────────────────
+//
+// `agentguard ca {install|uninstall|show}` is implemented entirely in the
+// CLI binary. The daemon is not involved — all the trust-store work happens
+// in `agentguard_core::ca::LocalCa`.
+//
+// Why local-only? `install` and `uninstall` need to write to `/etc/...`
+// which only root can do; the daemon already runs as root but going through
+// IPC would require defining a new IpcCommand variant just for this. It's
+// simpler for the user to run `sudo agentguard ca install` directly.
+
+/// Resolve the directory holding `root.crt` / `root.key`.
+///
+/// Strategy:
+/// 1. `AGENTGUARD_CA_DIR` env var (override, used by tests).
+/// 2. `/var/lib/agentguard/ca` if running as root (matches the systemd
+///    service's `StateDirectory=agentguard`).
+/// 3. `~/.agentguard/ca` otherwise (per-user dev/demo setup).
+fn resolve_ca_dir() -> PathBuf {
+    if let Ok(explicit) = std::env::var("AGENTGUARD_CA_DIR") {
+        return PathBuf::from(explicit);
+    }
+    #[cfg(unix)]
+    {
+        // SAFETY: getuid is async-signal-safe and always succeeds.
+        let euid = unsafe { libc::geteuid() };
+        if euid == 0 {
+            return PathBuf::from("/var/lib/agentguard/ca");
+        }
+    }
+    agentguard_core::config::expand_path("~/.agentguard/ca")
+}
+
+/// SHA-256 of the certificate PEM (as-stored on disk), formatted as
+/// colon-separated uppercase hex.
+///
+/// **Note:** this is the digest of the PEM bytes, not of the DER body —
+/// avoids pulling a base64 dependency just for this CLI subcommand. It
+/// is still a useful, deterministic fingerprint for "is this the same
+/// cert I generated yesterday?". To get the canonical X.509 fingerprint
+/// (matching `openssl x509 -fingerprint -sha256`) the user can run:
+///   `openssl x509 -in /var/lib/agentguard/ca/root.crt -fingerprint -sha256`.
+fn ca_pem_sha256(pem: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(pem.as_bytes());
+    let digest = hasher.finalize();
+    digest
+        .iter()
+        .map(|b| format!("{b:02X}"))
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+fn handle_ca_install() -> Result<()> {
+    use agentguard_core::ca::LocalCa;
+    let ca_dir = resolve_ca_dir();
+    println!("{} Installing AgentGuard CA into the system trust store", bold("•"));
+    println!("  CA directory: {}", ca_dir.display());
+
+    let ca = LocalCa::load_or_generate(&ca_dir).with_context(|| {
+        format!("loading/creating CA at {}", ca_dir.display())
+    })?;
+
+    match ca.install_system_trust() {
+        Ok(report) => {
+            println!(
+                "  {} Installed via {:?}",
+                green("✓"),
+                report.method
+            );
+            if let Some(p) = &report.installed_path {
+                println!("  Anchor file: {}", p.display());
+            }
+            if !report.trust_update_run {
+                println!(
+                    "  {} No trust-update tool was run automatically. \
+                     Refresh manually for your distro:",
+                    yellow("⚠")
+                );
+                println!("    Fedora/RHEL:   sudo update-ca-trust extract");
+                println!("    Debian/Ubuntu: sudo update-ca-certificates");
+                println!("    Arch:          sudo trust extract-compat");
+            }
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!(
+                "  {} Trust-store install failed: {}\n  Hint: run with sudo.",
+                red("✗"),
+                e
+            );
+            Err(anyhow::anyhow!(e))
+        }
+    }
+}
+
+fn handle_ca_uninstall() -> Result<()> {
+    use agentguard_core::ca::LocalCa;
+    println!("{} Removing AgentGuard CA from the system trust store", bold("•"));
+    LocalCa::uninstall_system_trust().context("uninstall_system_trust")?;
+    println!("  {} CA removed from trust store", green("✓"));
+    Ok(())
+}
+
+fn handle_ca_show() -> Result<()> {
+    use agentguard_core::ca::LocalCa;
+    let ca_dir = resolve_ca_dir();
+    let ca_path = ca_dir.join(agentguard_core::ca::CA_CERT_FILE);
+
+    println!("{} AgentGuard local CA", bold("•"));
+    println!("  Directory:  {}", ca_dir.display());
+    println!("  Cert file:  {}", ca_path.display());
+
+    if !ca_path.is_file() {
+        println!(
+            "  {} CA not yet generated. Start the daemon or run \
+             `sudo agentguard ca install` to generate one.",
+            yellow("⚠")
+        );
+        return Ok(());
+    }
+
+    let pem = std::fs::read_to_string(&ca_path)
+        .with_context(|| format!("reading {}", ca_path.display()))?;
+    let pem_sha = ca_pem_sha256(&pem);
+    println!("  PEM SHA-256: {}", pem_sha);
+    println!("  Bytes:       {}", pem.len());
+    println!(
+        "  {} For canonical X.509 fingerprint:\n      openssl x509 -in {} -fingerprint -sha256",
+        dim("hint:"),
+        ca_path.display()
+    );
+    println!();
+
+    // Surface trust-store status without requiring root: just check whether
+    // the canonical anchor file exists in any well-known location.
+    let anchors = [
+        "/usr/local/share/ca-certificates/agentguard-ca.crt",
+        "/etc/pki/ca-trust/source/anchors/agentguard-ca.crt",
+        "/etc/ssl/certs/agentguard-ca.crt",
+        // legacy filename written by older shell installers
+        "/etc/pki/ca-trust/source/anchors/agentguard.crt",
+    ];
+    let installed: Vec<&str> = anchors
+        .iter()
+        .copied()
+        .filter(|p| std::path::Path::new(p).exists())
+        .collect();
+    if installed.is_empty() {
+        println!(
+            "  {} Not installed in the system trust store. \
+             Run: sudo agentguard ca install",
+            yellow("⚠")
+        );
+    } else {
+        println!("  {} Installed in trust store:", green("✓"));
+        for p in installed {
+            println!("    {}", p);
+        }
+    }
+    let _ = LocalCa::load_or_generate(&ca_dir); // sanity check; ignore result
+    Ok(())
+}
+
 // ── Main ───────────────────────────────────────────────────
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Init, Setup, Update and Check are handled locally (no IPC needed)
+    // Init, Setup, Update, Check, Recommend, Groups, and Ca are handled locally (no IPC needed)
     if matches!(
         cli.command,
         Command::Init { .. }
-            | Command::Setup
+            | Command::Setup { .. }
             | Command::Check
             | Command::Update { .. }
             | Command::Rules(RulesCmd::Add { .. })
+            | Command::Rules(RulesCmd::Remove { .. })
+            | Command::Recommend { .. }
+            | Command::Groups(GroupsCmd::List)
+            | Command::Ca(_)
+            | Command::Protect { all: true, .. }
+            | Command::Protect { group: Some(_), .. }
     ) {
         match cli.command {
             Command::Init { output, defaults } => return handle_init(output, defaults),
-            Command::Setup => return handle_setup(),
+            Command::Setup { smart, yes } => {
+                if smart || yes {
+                    return handle_smart_setup(yes);
+                }
+                return handle_setup();
+            }
             Command::Check => return handle_check(),
             Command::Update { check_only } => return handle_update(check_only),
             Command::Rules(RulesCmd::Add { paths, .. }) => return handle_rules_add(&paths),
-            _ => unreachable!(), // unwrap-ok: guarded by outer matches!
+            Command::Rules(RulesCmd::Remove { paths }) => return handle_rules_remove(&paths),
+            Command::Recommend { json } => return handle_recommend(json),
+            Command::Groups(GroupsCmd::List) => return handle_groups_list(),
+            Command::Groups(GroupsCmd::Enable { name }) => return handle_protect_group(&name),
+            Command::Groups(GroupsCmd::Disable { name }) => {
+                println!(
+                    "  {} Usa 'agentguard unprotect' para remover rutas del perfil '{}'.",
+                    yellow("⚠"),
+                    name
+                );
+                return Ok(());
+            }
+            Command::Ca(CaCmd::Install) => return handle_ca_install(),
+            Command::Ca(CaCmd::Uninstall) => return handle_ca_uninstall(),
+            Command::Ca(CaCmd::Show) => return handle_ca_show(),
+            Command::Protect { all: true, .. } => return handle_protect_all(),
+            Command::Protect {
+                group: Some(ref name),
+                ..
+            } => return handle_protect_group(name),
+            _ => unreachable!(),
         }
     }
 
@@ -1005,8 +1929,10 @@ mod tests {
     #[test]
     fn build_command_protect() {
         let cmd = build_command(Command::Protect {
-            path: "/tmp/x".into(),
+            path: Some("/tmp/x".into()),
             watch_only: false,
+            all: false,
+            group: None,
         });
         match cmd {
             IpcCommand::Protect { path, watch_only } => {

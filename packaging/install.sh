@@ -251,7 +251,8 @@ UNIEOF
     fi
 
     # Añadir CA root al trust store del sistema
-    local ca_cert="/var/lib/agentguard/ca/root-cert.pem"
+    # NOTE: filename must match `CA_CERT_FILE` in agentguard-core/src/ca.rs
+    local ca_cert="/var/lib/agentguard/ca/root.crt"
     if [[ -f "$ca_cert" ]]; then
         info "Adding AgentGuard CA to system trust store..."
         if command -v update-ca-trust &>/dev/null; then

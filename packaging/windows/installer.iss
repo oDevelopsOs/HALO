@@ -75,7 +75,8 @@ Filename: "sc.exe"; Parameters: "create ""{#AppName}"" binPath= ""{app}\{#Daemon
 Filename: "sc.exe"; Parameters: "start ""{#AppName}"""; \
     StatusMsg: "Starting service..."; Flags: runhidden
 ; Add CA root to system trust store (if exists)
-Filename: "certutil.exe"; Parameters: "-addstore -f ""ROOT"" ""{commonappdata}\{#AppName}\ca\root-cert.pem"""; \
+; NOTE: filename must match `CA_CERT_FILE` in agentguard-core/src/ca.rs
+Filename: "certutil.exe"; Parameters: "-addstore -f ""ROOT"" ""{commonappdata}\{#AppName}\ca\root.crt"""; \
     StatusMsg: "Adding CA to trust store..."; Flags: runhidden skipifdoesntexist
 
 [UninstallRun]

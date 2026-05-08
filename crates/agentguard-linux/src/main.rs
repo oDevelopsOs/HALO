@@ -7,7 +7,7 @@
 //! - SIGTERM / SIGINT → graceful shutdown (limpia socket, cierra proxy)
 //! - SIGUSR1 → reload config (pending — Fase 3)
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[cfg(unix)]
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -23,15 +23,25 @@ use agentguard_core::ca::LocalCa;
 #[cfg(unix)]
 use agentguard_core::config::Config;
 #[cfg(unix)]
+use agentguard_core::db::Database;
+#[cfg(unix)]
 use agentguard_core::dlp::patterns::compile_all;
 #[cfg(unix)]
 use agentguard_core::dlp::tls::LeafIssuer;
 #[cfg(unix)]
 use agentguard_core::dlp::DlpProxy;
 #[cfg(unix)]
+use agentguard_core::dlp::PromptSanitizer;
+#[cfg(unix)]
+use agentguard_core::dlp::RedactionEngine;
+#[cfg(unix)]
 use agentguard_core::events::{SecurityEvent, ViolationKind};
 #[cfg(unix)]
 use agentguard_core::ipc_server::IpcServer;
+#[cfg(unix)]
+use agentguard_core::project_discoverer::ProjectDiscoverer;
+#[cfg(unix)]
+use agentguard_core::smart_guardian::SmartGuardian;
 #[cfg(unix)]
 use agentguard_core::vault::Vault;
 #[cfg(unix)]
@@ -41,7 +51,7 @@ use agentguard_linux::guard::select_guard;
 use anyhow::{Context, Result};
 use clap::Parser;
 #[cfg(unix)]
-use tokio::sync::mpsc;
+use tokio::sync::broadcast;
 #[cfg(unix)]
 use tracing::{error, info, warn};
 #[cfg(unix)]
@@ -185,8 +195,43 @@ async fn main() -> Result<()> {
         protected_dirs = config.protected_dirs.len(),
         protected_files = config.protected_files.len(),
         dlp_enabled = config.dlp.enabled,
+        guardian_mode = ?config.guardian.mode,
         "config loaded"
     );
+
+    // ── SmartGuardian (v2.2) ───────────────────────────────
+    let guardian = SmartGuardian::new(config.guardian.clone(), Vec::new());
+    info!(
+        mode = ?guardian.mode(),
+        sanitization = guardian.is_sanitization_enabled(),
+        auto_protect = guardian.auto_protect_workspaces(),
+        "SmartGuardian initialized"
+    );
+
+    // ── Auto-detect AI workspaces ─────────────────────────
+    if guardian.auto_protect_workspaces() {
+        let cwd_hints: Vec<_> = config
+            .protected_dirs
+            .iter()
+            .filter(|d| d.exists())
+            .cloned()
+            .collect();
+        let projects = ProjectDiscoverer::discover(&cwd_hints);
+        if !projects.is_empty() {
+            info!(
+                count = projects.len(),
+                "AI workspaces discovered (info-only — add via 'agentguard protect' or config.toml)"
+            );
+            for p in &projects {
+                tracing::debug!(
+                    path = %p.path.display(),
+                    ptype = %p.display_type(),
+                    sensitivity = p.sensitivity_score,
+                    "discovered project"
+                );
+            }
+        }
+    }
 
     // ── Vault ───────────────────────────────────────────────
     let vault_dir = if config.vault.vault_dir.as_os_str().is_empty() {
@@ -206,6 +251,18 @@ async fn main() -> Result<()> {
             Err(e) => warn!(error = %e, "startup snapshot failed"),
         }
     }
+
+    // ── Database (Fase 6: siempre activa) ────────────────────
+    let db = match Database::open_default() {
+        Ok(d) => {
+            info!(path = %d.path().display(), "SQLite database opened");
+            Some(Arc::new(d))
+        }
+        Err(e) => {
+            warn!(error = %e, "failed to open SQLite database — agents/stats/rules unavailable");
+            None
+        }
+    };
 
     // ── CA (HTTPS MITM) ─────────────────────────────────────
     let ca_dir = default_ca_dir();
@@ -233,6 +290,15 @@ async fn main() -> Result<()> {
         );
         if !sandbox_caps.bwrap_available {
             warn!("to enable sandbox mode: sudo apt install bubblewrap");
+        }
+    }
+
+    // ── Cleanup stale BPF programs from previous run ───────
+    #[cfg(feature = "ebpf")]
+    {
+        use agentguard_linux::guard::ebpf;
+        if let Err(e) = ebpf::cleanup_pinned_bpf() {
+            tracing::warn!(error = %e, "failed to cleanup pinned BPF programs");
         }
     }
 
@@ -265,7 +331,8 @@ async fn main() -> Result<()> {
     );
 
     // ── Canal de eventos ────────────────────────────────────
-    let (event_tx, mut event_rx) = mpsc::channel::<SecurityEvent>(256);
+    let (event_tx, _) = broadcast::channel::<SecurityEvent>(256);
+    let mut event_rx = event_tx.subscribe();
 
     let guard_event_tx = event_tx.clone();
     let guard_task = tokio::spawn(async move {
@@ -286,10 +353,11 @@ async fn main() -> Result<()> {
     let pattern_count = agent_patterns.len();
 
     let scan_tx = event_tx.clone();
+    let scan_mode = effective_mode.to_string();
     tokio::task::spawn_blocking(move || {
-        agentguard_linux::guard::agents::scan_loop(agent_patterns, scan_tx);
+        agentguard_linux::guard::agents::scan_loop(agent_patterns, scan_mode, scan_tx);
     });
-    info!(count = pattern_count, "agent process scanner started");
+    info!(count = pattern_count, mode = %effective_mode, "agent process scanner started");
 
     // ── v2.1: Process watcher (eBPF tracepoint) ─────────────
     #[cfg(feature = "ebpf")]
@@ -352,13 +420,34 @@ async fn main() -> Result<()> {
         match compile_all(&custom) {
             Ok(patterns) => {
                 let action = config.dlp_action()?;
+                let effective_action = guardian.effective_dlp_action(action);
+                let mut engine =
+                    RedactionEngine::new(patterns.clone(), config.guardian.redaction_style);
+                if !config.guardian.trusted_patterns.is_empty() {
+                    let trusted_regexes: Vec<String> = config
+                        .guardian
+                        .trusted_patterns
+                        .iter()
+                        .map(|tp| tp.regex.clone())
+                        .collect();
+                    match engine.with_trusted(&trusted_regexes) {
+                        Ok(()) => {
+                            info!(count = trusted_regexes.len(), "trusted patterns loaded");
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "failed to compile trusted patterns");
+                        }
+                    }
+                }
+                let sanitizer = PromptSanitizer::new(engine, Some(event_tx.clone()));
                 let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), config.dlp.proxy_port);
-                let proxy = DlpProxy::new(patterns, action)
+                let proxy = DlpProxy::new(patterns, effective_action)
                     .with_events(event_tx.clone())
-                    .with_tls(leaf_issuer.clone());
+                    .with_tls(leaf_issuer.clone())
+                    .with_sanitizer(sanitizer);
                 match proxy.start(addr).await {
                     Ok(h) => {
-                        info!(addr = %h.local_addr(), action = ?action, "DLP proxy started");
+                        info!(addr = %h.local_addr(), action = ?effective_action, "DLP proxy started");
                         Some(h)
                     }
                     Err(e) => {
@@ -379,13 +468,18 @@ async fn main() -> Result<()> {
 
     // ── IPC server ──────────────────────────────────────────
     let log_path = incidents_log_path();
+    if let Some(parent) = log_path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            tracing::warn!(path = %parent.display(), error = %e, "cannot create log directory");
+        }
+    }
     let paused = Arc::new(AtomicBool::new(false));
 
     // v2.1: shared state for sandbox tracking and incident counting
     let active_sandboxes: Arc<RwLock<Vec<SandboxedAgent>>> = Arc::new(RwLock::new(Vec::new()));
     let incidents_counter = Arc::new(AtomicU64::new(0));
 
-    let ipc_server = IpcServer::builder(
+    let mut ipc_builder = IpcServer::builder(
         vault.clone(),
         config.clone(),
         &guard_backend_name,
@@ -397,6 +491,7 @@ async fn main() -> Result<()> {
     .capabilities(sandbox_caps.report())
     .active_sandboxes(active_sandboxes.clone())
     .incidents_count(incidents_counter.clone())
+    .event_bus(event_tx.clone())
     .launch_agent_fn(Arc::new({
         let cfg = config.clone();
         move |exe, cwd, _extra_args, mode_override| {
@@ -410,9 +505,15 @@ async fn main() -> Result<()> {
             rt.block_on(launcher.launch(&exe, &project_dir, use_landlock, network_iso))
                 .map_err(|e| format!("sandbox: {e}"))
         }
-    }))
-    .build()
-    .with_context(|| "failed to create IPC server")?;
+    }));
+
+    if let Some(ref db) = db {
+        ipc_builder = ipc_builder.database(db.clone());
+    }
+
+    let ipc_server = ipc_builder
+        .build()
+        .with_context(|| "failed to create IPC server")?;
     let ipc_socket_path = default_ipc_socket_path();
     let ipc_handle = match ipc_server.start(ipc_socket_path.clone()) {
         Ok(h) => {
@@ -537,6 +638,8 @@ async fn main() -> Result<()> {
     let sandboxes_for_events = active_sandboxes.clone();
     let counter_for_events = incidents_counter.clone();
     let alerts_enabled = config.alerts.desktop_notifications;
+    let db_for_events = db.clone();
+    let sandbox_launcher_cfg = config.clone();
 
     info!("entering main loop (SIGTERM / SIGHUP / ctrl-c to quit)");
 
@@ -567,23 +670,65 @@ async fn main() -> Result<()> {
 
     loop {
         tokio::select! {
-            Some(event) = event_rx.recv() => {
-                if paused.load(Ordering::SeqCst) {
-                    // Protection paused — log but don't react
-                    tracing::debug!(kind = ?event, "event received while paused");
-                    persist_incident(&log_path, &event).await;
-                    counter_for_events.fetch_add(1, Ordering::SeqCst);
-                } else {
-                    persist_incident(&log_path, &event).await;
-                    counter_for_events.fetch_add(1, Ordering::SeqCst);
-                    handle_event(
-                        &vault_for_events,
-                        snapshot_on_violation,
-                        &violation_paths,
-                        event,
-                        &sandboxes_for_events,
-                        alerts_enabled,
-                    ).await;
+            result = event_rx.recv() => {
+                match result {
+                    Ok(event) => {
+                        if paused.load(Ordering::SeqCst) {
+                            // Protection paused — log but don't react
+                            tracing::debug!(kind = ?event, "event received while paused");
+                            persist_incident(&log_path, &event, db_for_events.as_deref()).await;
+                            counter_for_events.fetch_add(1, Ordering::SeqCst);
+                            continue;
+                        }
+
+                        // ── Sandbox new agents ──────────────────────
+                        if let SecurityEvent::AgentDetected {
+                            pid,
+                            ref agent_name,
+                            ref cwd,
+                            ref mode,
+                            ..
+                        } = &event
+                        {
+                            if (mode == "sandbox" || mode == "transparent" || mode == "hybrid") && !paused.load(Ordering::SeqCst) {
+                                match try_sandbox_agent(
+                                    *pid,
+                                    agent_name,
+                                    cwd,
+                                    mode,
+                                    &sandbox_launcher_cfg,
+                                    &log_path,
+                                    &vault_for_events,
+                                    snapshot_on_violation,
+                                    &violation_paths,
+                                    &sandboxes_for_events,
+                                    alerts_enabled,
+                                    db_for_events.as_deref(),
+                                ).await {
+                                    SandboxResult::Handled => continue,
+                                    SandboxResult::Fallthrough => {} // continue normal flow below
+                                }
+                            }
+                        }
+                        persist_incident(&log_path, &event, db_for_events.as_deref()).await;
+                        counter_for_events.fetch_add(1, Ordering::SeqCst);
+                        handle_event(
+                            &vault_for_events,
+                            snapshot_on_violation,
+                            &violation_paths,
+                            event,
+                            &sandboxes_for_events,
+                            alerts_enabled,
+                            db_for_events.as_deref(),
+                        ).await;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        info!("event bus closed — shutting down");
+                        break;
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(skipped = n, "event bus overflow");
+                    }
                 }
             }
             _ = tokio::signal::ctrl_c() => {
@@ -640,7 +785,11 @@ fn main() {
 }
 
 #[cfg(unix)]
-async fn persist_incident(log_path: &std::path::Path, event: &SecurityEvent) {
+async fn persist_incident(
+    log_path: &std::path::Path,
+    event: &SecurityEvent,
+    db: Option<&agentguard_core::db::Database>,
+) {
     let entry = match serde_json::to_string(event) {
         Ok(json) => format!("{json}\n"),
         Err(e) => {
@@ -661,6 +810,201 @@ async fn persist_incident(log_path: &std::path::Path, event: &SecurityEvent) {
         }
         Err(e) => error!(error = %e, "failed to open incidents log for append"),
     }
+
+    // Also insert into SQLite database if available
+    if let Some(db) = db {
+        let record = agentguard_core::db::IncidentRecord {
+            id: None,
+            timestamp: event.timestamp() as i64,
+            kind: match event {
+                SecurityEvent::FileViolation { .. } => "file_violation",
+                SecurityEvent::DlpViolation { .. } => "dlp_violation",
+                SecurityEvent::DlpRedaction { .. } => "dlp_redaction",
+                SecurityEvent::SystemError { .. } => "system_error",
+                SecurityEvent::AgentDetected { .. } => "agent_detected",
+                SecurityEvent::AgentSandboxed { .. } => "agent_sandboxed",
+            }
+            .into(),
+            agent_name: match event {
+                SecurityEvent::FileViolation { process, .. } => Some(process.clone()),
+                SecurityEvent::DlpViolation { process, .. } => Some(process.clone()),
+                SecurityEvent::DlpRedaction { process, .. } => Some(process.clone()),
+                SecurityEvent::AgentDetected { agent_name, .. } => Some(agent_name.clone()),
+                SecurityEvent::AgentSandboxed { agent_name, .. } => Some(agent_name.clone()),
+                SecurityEvent::SystemError { .. } => None,
+            },
+            agent_pid: match event {
+                SecurityEvent::FileViolation { pid, .. }
+                | SecurityEvent::DlpViolation { pid, .. }
+                | SecurityEvent::DlpRedaction { pid, .. } => Some(*pid as i64),
+                SecurityEvent::AgentDetected { pid, .. } => Some(*pid as i64),
+                SecurityEvent::AgentSandboxed { original_pid, .. } => Some(*original_pid as i64),
+                SecurityEvent::SystemError { .. } => None,
+            },
+            path: match event {
+                SecurityEvent::FileViolation { path, .. } => Some(path.display().to_string()),
+                SecurityEvent::DlpViolation { destination, .. }
+                | SecurityEvent::DlpRedaction { destination, .. } => Some(destination.clone()),
+                SecurityEvent::AgentDetected { cwd, .. }
+                | SecurityEvent::AgentSandboxed { cwd, .. } => Some(cwd.display().to_string()),
+                SecurityEvent::SystemError { .. } => None,
+            },
+            violation: match event {
+                SecurityEvent::FileViolation { violation, .. } => Some(format!("{violation:?}")),
+                SecurityEvent::DlpViolation { pattern_name, .. }
+                | SecurityEvent::DlpRedaction { pattern_name, .. } => Some(pattern_name.clone()),
+                _ => None,
+            },
+            process: match event {
+                SecurityEvent::FileViolation { process, .. } => Some(process.clone()),
+                SecurityEvent::DlpViolation { process, .. } => Some(process.clone()),
+                SecurityEvent::DlpRedaction { process, .. } => Some(process.clone()),
+                SecurityEvent::AgentDetected { agent_name, .. } => Some(agent_name.clone()),
+                SecurityEvent::AgentSandboxed { agent_name, .. } => Some(agent_name.clone()),
+                SecurityEvent::SystemError { .. } => None,
+            },
+            details: None,
+            session_id: None,
+        };
+        if let Err(e) = db.insert_incident(&record) {
+            warn!(error = %e, "failed to insert incident into database");
+        }
+    }
+}
+
+enum SandboxResult {
+    Handled,
+    Fallthrough,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn try_sandbox_agent(
+    pid: u32,
+    agent_name: &str,
+    cwd: &Path,
+    mode: &str,
+    sandbox_cfg: &Config,
+    log_path: &Path,
+    vault: &Vault,
+    snapshot_on_violation: bool,
+    protected_paths: &[PathBuf],
+    sandboxes: &RwLock<Vec<SandboxedAgent>>,
+    alerts_enabled: bool,
+    db: Option<&agentguard_core::db::Database>,
+) -> SandboxResult {
+    // ── 1. Resolver binario desde /proc/PID/exe ─────────────────
+    let exe_link = format!("/proc/{pid}/exe");
+    let resolved_exe = std::fs::read_link(&exe_link)
+        .ok()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| agent_name.to_string());
+
+    let exe_path = if resolved_exe.contains('/') {
+        if !std::path::Path::new(&resolved_exe).is_file() {
+            warn!(pid, agent = %agent_name, exe = %resolved_exe,
+                  "cannot sandbox: binary not found — keeping alive");
+            return SandboxResult::Fallthrough;
+        }
+        resolved_exe
+    } else {
+        match which::which(&resolved_exe) {
+            Ok(p) => p.display().to_string(),
+            Err(_) => {
+                warn!(pid, agent = %agent_name,
+                      "'{}' not found in root PATH — keeping alive", resolved_exe);
+                return SandboxResult::Fallthrough;
+            }
+        }
+    };
+
+    // ── 2. Leer argumentos originales de /proc/PID/cmdline ─────
+    let agent_args = read_proc_cmdline(pid);
+
+    // ── 3. CWD real del proceso ────────────────────────────────
+    let cwd_real =
+        std::fs::read_link(format!("/proc/{pid}/cwd")).unwrap_or_else(|_| cwd.to_path_buf());
+
+    info!(pid, agent = %agent_name, exe = %exe_path, args = ?agent_args,
+          cwd = %cwd_real.display(), mode = %mode,
+          "launching transparent sandbox alongside original");
+
+    // ── 4. Lanzar sandbox transparente SIN matar el original ─────
+    let launcher = agentguard_linux::sandbox::SandboxLauncher::new(sandbox_cfg.clone());
+
+    match launcher
+        .launch_transparent(&exe_path, &agent_args, &cwd_real, protected_paths)
+        .await
+    {
+        Ok(sandbox_pid) => {
+            // Sandbox arrancó. Original sigue vivo.
+            // El usuario tiene DOS procesos: el original y el sandboxeado.
+            // Ambos comparten /home, /dev, terminal. El usuario decide cuál usar.
+            info!(original_pid = pid, sandbox_pid, agent = %agent_name,
+                  "transparent sandbox launched alongside original — original NOT killed");
+
+            let event = SecurityEvent::AgentSandboxed {
+                original_pid: pid,
+                sandbox_pid,
+                agent_name: agent_name.to_string(),
+                cwd: cwd_real,
+                timestamp: unix_ts(),
+            };
+
+            persist_incident(log_path, &event, db).await;
+            handle_event(
+                vault,
+                snapshot_on_violation,
+                protected_paths,
+                event,
+                sandboxes,
+                alerts_enabled,
+                db,
+            )
+            .await;
+            SandboxResult::Handled
+        }
+        Err(e) => {
+            warn!(pid, agent = %agent_name, error = %e,
+                  "transparent sandbox failed — original process unaffected");
+            SandboxResult::Fallthrough
+        }
+    }
+}
+
+/// Lee /proc/PID/cmdline y devuelve los argumentos como Vec<String>
+fn read_proc_cmdline(pid: u32) -> Vec<String> {
+    let path = format!("/proc/{pid}/cmdline");
+    match std::fs::read(&path) {
+        Ok(data) if !data.is_empty() => {
+            let mut args = Vec::new();
+            let mut current = Vec::new();
+            for &byte in &data {
+                if byte == 0 {
+                    if !current.is_empty() {
+                        if let Ok(s) = String::from_utf8(current.clone()) {
+                            args.push(s);
+                        }
+                        current.clear();
+                    }
+                } else {
+                    current.push(byte);
+                }
+            }
+            // Don't forget the last arg (no trailing \0)
+            if !current.is_empty() {
+                if let Ok(s) = String::from_utf8(current) {
+                    args.push(s);
+                }
+            }
+            // Skip argv[0] (the binary name itself) — bwrap already gets it
+            if args.len() > 1 {
+                args[1..].to_vec()
+            } else {
+                Vec::new()
+            }
+        }
+        _ => Vec::new(),
+    }
 }
 
 #[cfg(unix)]
@@ -671,7 +1015,53 @@ async fn handle_event(
     event: SecurityEvent,
     active_sandboxes: &RwLock<Vec<SandboxedAgent>>,
     alerts_enabled: bool,
+    db: Option<&agentguard_core::db::Database>,
 ) {
+    // Update agent stats in database for agent-related events
+    if let Some(db) = db {
+        match &event {
+            SecurityEvent::AgentDetected { agent_name, .. }
+            | SecurityEvent::AgentSandboxed { agent_name, .. } => {
+                use agentguard_core::db::AgentSession;
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+                let session_id = format!("{agent_name}-{now}");
+                let session = AgentSession {
+                    id: session_id,
+                    agent_name: agent_name.clone(),
+                    pid: match &event {
+                        SecurityEvent::AgentDetected { pid, .. } => Some(*pid as i64),
+                        SecurityEvent::AgentSandboxed { original_pid, .. } => {
+                            Some(*original_pid as i64)
+                        }
+                        _ => None,
+                    },
+                    cwd: match &event {
+                        SecurityEvent::AgentDetected { cwd, .. }
+                        | SecurityEvent::AgentSandboxed { cwd, .. } => {
+                            Some(cwd.display().to_string())
+                        }
+                        _ => None,
+                    },
+                    sandbox_mode: match &event {
+                        SecurityEvent::AgentDetected { mode, .. } => Some(mode.clone()),
+                        SecurityEvent::AgentSandboxed { .. } => Some("sandbox".into()),
+                        _ => None,
+                    },
+                    started_at: now,
+                    ended_at: None,
+                    total_seconds: None,
+                    violation_count: Some(0),
+                };
+                if let Err(e) = db.start_agent_session(&session) {
+                    warn!(error = %e, "failed to record agent session in database");
+                }
+            }
+            _ => {}
+        }
+    }
     match &event {
         SecurityEvent::FileViolation {
             path,
@@ -712,6 +1102,19 @@ async fn handle_event(
                 destination = %destination,
                 process = %process,
                 "DLP violation detected"
+            );
+        }
+        SecurityEvent::DlpRedaction {
+            pattern_name,
+            destination,
+            process,
+            ..
+        } => {
+            info!(
+                pattern = %pattern_name,
+                destination = %destination,
+                process = %process,
+                "DLP secret redacted"
             );
         }
         SecurityEvent::SystemError { message, .. } => {
@@ -792,4 +1195,11 @@ fn send_desktop_notification(summary: &str, body: &str) {
         Ok(_) => tracing::debug!(summary, "desktop notification sent"),
         Err(e) => tracing::warn!(error = %e, "failed to send desktop notification"),
     }
+}
+
+fn unix_ts() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }

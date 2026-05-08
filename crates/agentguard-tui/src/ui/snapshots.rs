@@ -2,7 +2,7 @@
 
 use ratatui::{
     layout::Rect,
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, BorderType, Borders, List, ListItem, Paragraph},
     Frame,
 };
 
@@ -38,6 +38,7 @@ pub fn render(f: &mut Frame, state: &AppState, area: Rect) {
     let block = Block::default()
         .title(format!(" Snapshots — {} stored ", state.snapshots.len()))
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(theme::BORDER);
 
     if state.snapshots.is_empty() {

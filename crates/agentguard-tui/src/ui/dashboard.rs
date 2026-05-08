@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, BorderType, Borders, Paragraph},
     Frame,
 };
 
@@ -124,7 +124,7 @@ pub fn render(f: &mut Frame, state: &AppState, area: Rect) {
         theme::PURPLE_BRIGHT,
     );
     let violation_style = if state.daemon.incidents_count > 0 {
-        theme::DANGER
+        theme::ORANGE
     } else {
         theme::PURPLE_DIM
     };
@@ -153,6 +153,7 @@ fn render_guardian_card(f: &mut Frame, area: Rect, state: &AppState) {
     let block = Block::default()
         .title(" Guardian ")
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme::PURPLE))
         .style(Style::default().bg(theme::SURFACE));
 
@@ -184,6 +185,7 @@ fn render_xp_section(f: &mut Frame, area: Rect, state: &AppState) {
 
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme::PURPLE_DIM))
         .style(Style::default().bg(theme::SURFACE));
 
@@ -247,6 +249,7 @@ fn render_xp_section(f: &mut Frame, area: Rect, state: &AppState) {
 fn render_stat_card(f: &mut Frame, area: Rect, icon: &str, label: &str, value: &str, color: Color) {
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(color).add_modifier(Modifier::BOLD))
         .style(Style::default().bg(theme::SURFACE));
 

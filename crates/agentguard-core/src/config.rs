@@ -15,6 +15,27 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// Nivel de riesgo de una ruta para protección inteligente.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum RiskLevel {
+    Low = 0,
+    Medium = 1,
+    High = 2,
+    Critical = 3,
+}
+
+impl std::fmt::Display for RiskLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Low => write!(f, "low"),
+            Self::Medium => write!(f, "medium"),
+            Self::High => write!(f, "high"),
+            Self::Critical => write!(f, "critical"),
+        }
+    }
+}
+
 /// Todos los errores que puede producir la carga de configuración.
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -39,12 +60,42 @@ pub enum ConfigError {
     },
 
     /// La acción de DLP tiene un valor desconocido.
-    #[error("invalid DLP action {0:?} (allowed: block, alert, log)")]
+    #[error("invalid DLP action {0:?} (allowed: block, alert, log, sanitize)")]
     BadDlpAction(String),
 
     /// No se pudo localizar el directorio home para expandir `~`.
     #[error("cannot determine home directory for tilde expansion")]
     NoHome,
+}
+
+/// Perfil de protección predefinido. Agrupa rutas por categoría.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ProtectionProfile {
+    pub name: String,
+    pub paths: Vec<PathBuf>,
+    #[serde(default)]
+    pub auto: bool,
+}
+
+/// Configuración de protección inteligente.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SmartProtection {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub auto_suggest_on_start: bool,
+    #[serde(default)]
+    pub profiles: Vec<ProtectionProfile>,
+}
+
+impl Default for SmartProtection {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            auto_suggest_on_start: true,
+            profiles: builtin_protection_profiles(),
+        }
+    }
 }
 
 /// Top-level config. Coincide con la estructura del `config.toml` descrita
@@ -92,6 +143,14 @@ pub struct Config {
     /// v2.1: Windows-specific configuration.
     #[serde(default)]
     pub windows: WindowsConfig,
+
+    /// v2.2: SmartGuardian intelligent protection mode.
+    #[serde(default)]
+    pub guardian: GuardianConfig,
+
+    /// Smart protection: perfiles predefinidos y detección automática.
+    #[serde(default)]
+    pub smart_protection: SmartProtection,
 }
 
 impl Default for Config {
@@ -109,6 +168,8 @@ impl Default for Config {
             agent_detection: AgentDetection::default(),
             updates: Updates::default(),
             windows: WindowsConfig::default(),
+            guardian: GuardianConfig::default(),
+            smart_protection: SmartProtection::default(),
         }
     }
 }
@@ -196,6 +257,52 @@ fn builtin_agent_patterns() -> Vec<AgentProcess> {
                 argv_contains_any: vec![],
                 env_has: None,
             },
+        },
+    ]
+}
+
+/// Perfiles de protección predefinidos para smart protection.
+fn builtin_protection_profiles() -> Vec<ProtectionProfile> {
+    vec![
+        ProtectionProfile {
+            name: "Personal".into(),
+            paths: vec![
+                PathBuf::from("~/Documents"),
+                PathBuf::from("~/Desktop"),
+                PathBuf::from("~/Pictures"),
+                PathBuf::from("~/Downloads"),
+                PathBuf::from("~/Videos"),
+                PathBuf::from("~/Music"),
+            ],
+            auto: false,
+        },
+        ProtectionProfile {
+            name: "Desarrollo".into(),
+            paths: vec![
+                PathBuf::from("~/Projects"),
+                PathBuf::from("~/src"),
+                PathBuf::from("~/code"),
+                PathBuf::from("~/workspace"),
+                PathBuf::from("~/dev"),
+            ],
+            auto: false,
+        },
+        ProtectionProfile {
+            name: "Secretos".into(),
+            paths: vec![
+                PathBuf::from("~/.ssh"),
+                PathBuf::from("~/.gnupg"),
+                PathBuf::from("~/.aws"),
+                PathBuf::from("~/.netrc"),
+                PathBuf::from("~/.git-credentials"),
+                PathBuf::from("~/.docker/config.json"),
+            ],
+            auto: false,
+        },
+        ProtectionProfile {
+            name: "AI Workspaces".into(),
+            paths: vec![],
+            auto: true,
         },
     ]
 }
@@ -324,7 +431,7 @@ fn default_dlp_port() -> u16 {
     7771
 }
 fn default_dlp_action() -> String {
-    "block".to_string()
+    "sanitize".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -339,6 +446,8 @@ pub enum DlpAction {
     Block,
     Alert,
     Log,
+    /// Sanitiza (redacta) el secreto y deja pasar el request.
+    Sanitize,
 }
 
 impl DlpAction {
@@ -348,9 +457,100 @@ impl DlpAction {
             "block" => Ok(Self::Block),
             "alert" => Ok(Self::Alert),
             "log" => Ok(Self::Log),
+            "sanitize" => Ok(Self::Sanitize),
             _ => Err(ConfigError::BadDlpAction(s.to_string())),
         }
     }
+}
+
+// ─── v2.2: Guardian Configuration ───────────────────────────────────────────
+
+/// Modo de operación del SmartGuardian.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GuardianMode {
+    /// Solo detecta y loguea, nunca bloquea ni sanitiza.
+    Observation,
+    /// Sanitiza + alerta (recomendado).
+    #[default]
+    Intelligent,
+    /// Bloquea todo lo riesgoso.
+    Strict,
+}
+
+/// Estilo de redacción para secretos.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RedactionStyle {
+    /// Reemplaza con marcador visible: [AGENTGUARD: X REDACTED]
+    #[default]
+    Visible,
+    /// Reemplazo genérico: [REDACTED]
+    Silent,
+    /// Mensaje más descriptivo: [SECRET REMOVED - X]
+    Aggressive,
+}
+
+impl RedactionStyle {
+    pub fn parse(s: &str) -> Self {
+        match s.to_ascii_lowercase().as_str() {
+            "silent" => Self::Silent,
+            "aggressive" => Self::Aggressive,
+            _ => Self::Visible,
+        }
+    }
+}
+
+/// Configuración del SmartGuardian (v2.2).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GuardianConfig {
+    /// Modo de operación global.
+    #[serde(default)]
+    pub mode: GuardianMode,
+
+    /// Activar sanitización automática de secretos en prompts.
+    #[serde(default = "default_true")]
+    pub sanitization: bool,
+
+    /// Detectar y proteger automáticamente workspaces de agentes IA.
+    #[serde(default = "default_true")]
+    pub auto_protect_ai_workspaces: bool,
+
+    /// Estilo de redacción para secretos.
+    #[serde(default)]
+    pub redaction_style: RedactionStyle,
+
+    /// Duración en minutos del modo "Trusted Edit".
+    #[serde(default = "default_trusted_timeout")]
+    pub trusted_edit_timeout_minutes: u32,
+
+    /// Patrones que NUNCA deben redactarse (allowlist del usuario).
+    #[serde(default)]
+    pub trusted_patterns: Vec<TrustedPattern>,
+}
+
+impl Default for GuardianConfig {
+    fn default() -> Self {
+        Self {
+            mode: GuardianMode::default(),
+            sanitization: true,
+            auto_protect_ai_workspaces: true,
+            redaction_style: RedactionStyle::default(),
+            trusted_edit_timeout_minutes: default_trusted_timeout(),
+            trusted_patterns: Vec::new(),
+        }
+    }
+}
+
+fn default_trusted_timeout() -> u32 {
+    30
+}
+
+/// Patrón que el usuario excluye de la redacción.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TrustedPattern {
+    pub name: String,
+    pub regex: String,
 }
 
 // ─── v2.1: Sandbox Configuration ─────────────────────────────────────────────
@@ -388,7 +588,7 @@ impl Default for SandboxConfig {
 }
 
 fn default_sandbox_mode() -> String {
-    "sandbox".to_string()
+    "ebpf".to_string()
 }
 
 // ─── v2.1: Agent Detection Configuration ─────────────────────────────────────
@@ -510,6 +710,12 @@ impl Config {
         if !self.vault.vault_dir.as_os_str().is_empty() {
             self.vault.vault_dir = expand_tilde(self.vault.vault_dir.clone())?;
         }
+        for profile in &mut self.smart_protection.profiles {
+            profile.paths = std::mem::take(&mut profile.paths)
+                .into_iter()
+                .map(expand_tilde)
+                .collect::<Result<_, _>>()?;
+        }
         Ok(self)
     }
 
@@ -519,20 +725,139 @@ impl Config {
     }
 }
 
+/// Resuelve el home directory del usuario REAL, no de root.
+/// Estrategia (en orden de prioridad):
+/// 1. AGENTGUARD_USER_HOME env var (override explícito en config/systemd)
+/// 2. SUDO_USER env var → buscar en /etc/passwd
+/// 3. DBUS_SESSION_BUS_ADDRESS → extraer usuario
+/// 4. Usuarios en /etc/passwd con UID >= 1000 y shell válida (excluye daemons)
+/// 5. Fallback: dirs::home_dir() (será /root si nada más funciona)
+pub fn resolve_real_user_home() -> Option<PathBuf> {
+    // Override explícito (recomendado para producción via systemd Environment=)
+    if let Ok(explicit) = std::env::var("AGENTGUARD_USER_HOME") {
+        let p = PathBuf::from(&explicit);
+        if p.is_dir() {
+            tracing::debug!("Using AGENTGUARD_USER_HOME: {}", explicit);
+            return Some(p);
+        }
+        tracing::warn!("AGENTGUARD_USER_HOME set but not a directory: {}", explicit);
+    }
+
+    // SUDO_USER → /etc/passwd lookup
+    if let Ok(sudo_user) = std::env::var("SUDO_USER") {
+        if !sudo_user.is_empty() && sudo_user != "root" {
+            if let Some(home) = home_from_passwd(&sudo_user) {
+                tracing::info!("Resolved home via SUDO_USER={}: {:?}", sudo_user, home);
+                return Some(home);
+            }
+        }
+    }
+
+    // Usuarios con UID >= 1000 en /etc/passwd (el primero con home válido)
+    if let Some(home) = first_human_user_home() {
+        tracing::info!("Resolved home via /etc/passwd scan: {:?}", home);
+        return Some(home);
+    }
+
+    // Último recurso
+    let fallback = dirs::home_dir();
+    tracing::warn!(
+        "Could not resolve real user home, falling back to: {:?}. \
+         Set AGENTGUARD_USER_HOME in systemd service to fix this.",
+        fallback
+    );
+    fallback
+}
+
+/// Busca el home de un usuario concreto en /etc/passwd.
+fn home_from_passwd(username: &str) -> Option<PathBuf> {
+    let content = std::fs::read_to_string("/etc/passwd").ok()?;
+    for line in content.lines() {
+        let fields: Vec<&str> = line.split(':').collect();
+        // formato: user:x:uid:gid:gecos:home:shell
+        if fields.len() >= 7 && fields[0] == username {
+            let home = PathBuf::from(fields[5]);
+            if home.is_dir() {
+                return Some(home);
+            }
+        }
+    }
+    None
+}
+
+/// Retorna el home del primer usuario humano (UID >= 1000) con home válido.
+fn first_human_user_home() -> Option<PathBuf> {
+    let content = std::fs::read_to_string("/etc/passwd").ok()?;
+    let mut candidates: Vec<(u32, PathBuf)> = Vec::new();
+
+    for line in content.lines() {
+        let fields: Vec<&str> = line.split(':').collect();
+        if fields.len() < 7 {
+            continue;
+        }
+
+        let uid: u32 = fields[2].parse().ok()?;
+        if uid < 1000 {
+            continue; // excluir daemons del sistema
+        }
+
+        let shell = fields[6];
+        // Excluir usuarios sin shell interactiva
+        if shell.ends_with("/nologin") || shell.ends_with("/false") || shell.is_empty() {
+            continue;
+        }
+
+        let home = PathBuf::from(fields[5]);
+        if home.is_dir() {
+            candidates.push((uid, home));
+        }
+    }
+
+    // El de menor UID suele ser el usuario principal
+    candidates.sort_by_key(|(uid, _)| *uid);
+    candidates.into_iter().map(|(_, home)| home).next()
+}
+
+/// Expande rutas con ~ usando el home real, no el de root.
+pub fn expand_path(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = resolve_real_user_home() {
+            return home.join(rest);
+        }
+    }
+    if path == "~" {
+        if let Some(home) = resolve_real_user_home() {
+            return home;
+        }
+    }
+    PathBuf::from(path)
+}
+
+/// `Path`-aware variant of [`expand_path`].
+///
+/// Useful where the caller already has a `&Path` / `&PathBuf` and would
+/// otherwise have to round-trip through `to_string_lossy()`. Non-UTF-8
+/// paths are returned unchanged.
+///
+/// This exists to give a single, uniform API surface — `smart_protect.rs`
+/// previously had its own `expand_path(&Path)` that used
+/// [`dirs::home_dir`] directly and therefore resolved `~/...` to `/root/...`
+/// when the daemon ran under systemd, defeating the whole "real user home"
+/// resolver.
+pub fn expand_path_p(path: &Path) -> PathBuf {
+    match path.to_str() {
+        Some(s) => expand_path(s),
+        None => path.to_path_buf(),
+    }
+}
+
 /// Reemplaza un `~` inicial por el home del usuario.
 fn expand_tilde(path: PathBuf) -> Result<PathBuf, ConfigError> {
     let s = match path.to_str() {
         Some(s) => s,
         None => return Ok(path),
     };
-    if let Some(rest) = s.strip_prefix("~/") {
-        let home = dirs::home_dir().ok_or(ConfigError::NoHome)?;
-        Ok(home.join(rest))
-    } else if s == "~" {
-        dirs::home_dir().ok_or(ConfigError::NoHome)
-    } else {
-        Ok(path)
-    }
+    Ok(expand_path(s))
 }
 
 #[cfg(test)]
@@ -564,7 +889,7 @@ action = "block"
         let cfg = Config::from_str("").expect("parse ok");
         assert_eq!(cfg.vault.keep_days, 30);
         assert_eq!(cfg.vault.auto_snapshot_interval_hours, 6);
-        assert_eq!(cfg.dlp.action, "block");
+        assert_eq!(cfg.dlp.action, "sanitize");
         assert_eq!(cfg.updates.channel, "stable");
     }
 
@@ -622,6 +947,8 @@ vault_dir = "~/vault"
         assert_eq!(DlpAction::parse("BLOCK").unwrap(), DlpAction::Block);
         assert_eq!(DlpAction::parse("alert").unwrap(), DlpAction::Alert);
         assert_eq!(DlpAction::parse("Log").unwrap(), DlpAction::Log);
+        assert_eq!(DlpAction::parse("SANITIZE").unwrap(), DlpAction::Sanitize);
+        assert_eq!(DlpAction::parse("sanitize").unwrap(), DlpAction::Sanitize);
     }
 
     #[test]
@@ -675,5 +1002,66 @@ channel = "stable"
             Some("AGENTGUARD_AGENT")
         );
         assert_eq!(cfg.dlp.custom_patterns.len(), 1);
+    }
+
+    #[test]
+    fn smart_protection_defaults_have_four_profiles() {
+        let cfg = Config::default();
+        assert_eq!(cfg.smart_protection.profiles.len(), 4);
+        assert_eq!(cfg.smart_protection.profiles[0].name, "Personal");
+        assert_eq!(cfg.smart_protection.profiles[1].name, "Desarrollo");
+        assert_eq!(cfg.smart_protection.profiles[2].name, "Secretos");
+        let ai_ws = &cfg.smart_protection.profiles[3];
+        assert_eq!(ai_ws.name, "AI Workspaces");
+        assert!(ai_ws.auto);
+        assert!(ai_ws.paths.is_empty());
+    }
+
+    #[test]
+    fn smart_protection_can_be_disabled() {
+        let toml = r#"
+[smart_protection]
+enabled = false
+auto_suggest_on_start = false
+"#;
+        let cfg = Config::from_str(toml).expect("parse");
+        assert!(!cfg.smart_protection.enabled);
+        assert!(!cfg.smart_protection.auto_suggest_on_start);
+        assert_eq!(cfg.smart_protection.profiles.len(), 0);
+    }
+
+    #[test]
+    fn smart_protection_custom_profiles_work() {
+        let toml = r#"
+[[smart_protection.profiles]]
+name = "Mi Empresa"
+paths = ["~/work", "~/clientes"]
+"#;
+        let cfg = Config::from_str(toml).expect("parse");
+        assert_eq!(cfg.smart_protection.profiles.len(), 1);
+        assert_eq!(cfg.smart_protection.profiles[0].name, "Mi Empresa");
+        assert_eq!(cfg.smart_protection.profiles[0].paths.len(), 2);
+    }
+
+    #[test]
+    fn smart_protection_resolve_expands_profiles() {
+        let toml = r#"
+[[smart_protection.profiles]]
+name = "Test"
+paths = ["~/testdir"]
+"#;
+        let cfg = Config::from_str(toml).unwrap().resolve().unwrap();
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(
+            cfg.smart_protection.profiles[0].paths[0],
+            home.join("testdir")
+        );
+    }
+
+    #[test]
+    fn risk_level_ordering() {
+        assert!(RiskLevel::Critical > RiskLevel::High);
+        assert!(RiskLevel::High > RiskLevel::Medium);
+        assert!(RiskLevel::Medium > RiskLevel::Low);
     }
 }

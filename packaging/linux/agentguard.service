@@ -44,5 +44,16 @@ RestrictSUIDSGID=true
 Environment=RUST_LOG=info
 Environment=PROTECTION_MODE=auto
 
+# DLP proxy auto-configuration for AI agents
+Environment=HTTP_PROXY=http://127.0.0.1:7771
+Environment=HTTPS_PROXY=http://127.0.0.1:7771
+Environment=http_proxy=http://127.0.0.1:7771
+Environment=https_proxy=http://127.0.0.1:7771
+Environment=NO_PROXY=localhost,127.0.0.1,::1
+Environment=no_proxy=localhost,127.0.0.1,::1
+
+# Set the REAL user home (replace 'nini' during install)
+# Environment=AGENTGUARD_USER_HOME=/home/nini
+
 [Install]
 WantedBy=multi-user.target

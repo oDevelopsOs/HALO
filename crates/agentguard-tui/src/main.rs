@@ -63,8 +63,12 @@ fn main() -> Result<()> {
     let client = IpcClient::new(socket_path);
     let mut state = AppState::new();
 
-    // Initial data fetch
+    // Initial data fetch (request/response — must succeed before Subscribe)
     state.refresh(&client);
+
+    // Now start the event stream — daemon is confirmed alive,
+    // so Subscribe won't deadlock with the status request.
+    client.start_event_stream();
 
     // Main render loop
     let res = run_loop(&mut terminal, &mut state, &client);
@@ -89,6 +93,14 @@ fn run_loop<B: Backend>(
 
     loop {
         terminal.draw(|f| render_frame(f, state))?;
+
+        // 1. Process push events from daemon (instant, non-blocking)
+        for event in client.try_recv_events() {
+            state.handle_ipc_event(event);
+        }
+
+        // 2. Update connected flag from the push connection state
+        state.daemon.connected = client.is_connected();
 
         if event::poll(tick_rate)? {
             if let Event::Key(key) = event::read()? {
@@ -156,8 +168,8 @@ fn run_loop<B: Backend>(
             }
         }
 
-        // Auto-refresh each 5s
-        if last_refresh.elapsed() >= refresh_rate {
+        // 3. Periodic refresh for data not covered by push (snapshots, agents list)
+        if last_refresh.elapsed() >= refresh_rate && state.daemon.connected {
             state.refresh(client);
             last_refresh = std::time::Instant::now();
         }

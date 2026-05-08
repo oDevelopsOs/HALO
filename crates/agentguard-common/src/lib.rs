@@ -29,6 +29,19 @@ pub const MAX_PREFIX_LEN: usize = 256;
 /// de comparación dentro del hook LSM (O(N) por syscall interceptada).
 pub const MAX_PREFIXES: u32 = 64;
 
+/// Número máximo de inodos en los mapas BPF `PROTECTED_DIR_INODES` y
+/// `PROTECTED_FILE_INODES`. Debe coincidir con `with_max_entries(N, 0)`
+/// en `agentguard-ebpf/src/file_guard.rs`.
+///
+/// Con indexado recursivo del subárbol (todos los subdirectorios bajo cada
+/// raíz protegida), este valor cubre escenarios típicos:
+/// - `~/Documents` con 5000 ficheros y 500 carpetas anidadas → ~500 inodes
+/// - 16 raíces × 500 subdirs cada una → ~8000 inodes (cabe holgadamente)
+///
+/// Si se alcanza el límite el daemon emite una advertencia explícita y
+/// continúa funcionando con la cobertura conseguida hasta ese punto.
+pub const MAX_PROTECTED_INODES: u32 = 8192;
+
 /// Longitud fija del campo `comm` de Linux (`TASK_COMM_LEN`).
 pub const COMM_LEN: usize = 16;
 
@@ -277,6 +290,21 @@ mod ipc {
             #[serde(default)]
             limit: Option<u32>,
         },
+        /// Fase 6: Suscribirse a eventos push del daemon.
+        Subscribe {
+            #[serde(default)]
+            events: std::vec::Vec<std::string::String>,
+        },
+        /// Fase 6: Cancelar suscripción a eventos push.
+        Unsubscribe,
+        /// Obtener sugerencias de protección inteligente.
+        SmartSuggest,
+        /// Aplicar sugerencias de protección.
+        SmartApply {
+            paths: std::vec::Vec<std::string::String>,
+        },
+        /// Listar perfiles de protección disponibles.
+        ProfilesList,
     }
 
     fn default_label() -> std::string::String {
@@ -343,6 +371,14 @@ mod ipc {
             violations_24h: u64,
             agents_tracked: u64,
         },
+        /// Sugerencias de protección inteligente.
+        SmartSuggestions {
+            suggestions: std::vec::Vec<SuggestionInfo>,
+        },
+        /// Lista de perfiles de protección.
+        ProfilesList {
+            profiles: std::vec::Vec<ProfileInfo>,
+        },
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -389,6 +425,28 @@ mod ipc {
         pub violation_count: Option<i64>,
     }
 
+    /// Sugerencia de protección generada por smart_protect.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct SuggestionInfo {
+        pub path: std::string::String,
+        pub group: std::string::String,
+        pub reason: std::string::String,
+        pub risk_level: std::string::String,
+        pub size_bytes: u64,
+        pub contains_secrets: bool,
+        pub is_git_repo: bool,
+        pub active_agents: std::vec::Vec<std::string::String>,
+    }
+
+    /// Información de un perfil de protección.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct ProfileInfo {
+        pub name: std::string::String,
+        pub path_count: usize,
+        pub enabled: bool,
+        pub is_auto: bool,
+    }
+
     /// Fase 5: Información de una regla de protección.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct RuleInfo {
@@ -397,10 +455,62 @@ mod ipc {
         pub added_at: i64,
         pub watch_only: bool,
     }
+
+    /// Fase 6: Evento push del daemon al cliente (TUI/CLI).
+    /// Se envía como JSON-line en una conexión persistente tras Subscribe.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(tag = "event", content = "data")]
+    pub enum IpcEvent {
+        /// Un agente IA fue detectado en directorio protegido.
+        AgentSpawned {
+            agent_name: std::string::String,
+            pid: u32,
+            sandbox_pid: Option<u32>,
+            mode: std::string::String,
+            cwd: std::string::String,
+            timestamp: u64,
+        },
+        /// Un agente sandboxeado terminó.
+        AgentExited {
+            agent_name: std::string::String,
+            sandbox_pid: u32,
+            exit_code: Option<i32>,
+            timestamp: u64,
+        },
+        /// Violación de seguridad detectada (filesystem o DLP).
+        ViolationDetected {
+            kind: std::string::String,
+            agent_name: Option<std::string::String>,
+            path: Option<std::string::String>,
+            violation: Option<std::string::String>,
+            detail: std::string::String,
+            timestamp: u64,
+        },
+        /// Protección pausada o reanudada.
+        ProtectionToggled {
+            paused: bool,
+            auto_resume_secs: Option<u64>,
+        },
+        /// Snapshot creado.
+        SnapshotCreated {
+            id: std::string::String,
+            label: std::string::String,
+            files: usize,
+            total_size: u64,
+        },
+        /// Configuración recargada (SIGHUP).
+        ConfigReloaded,
+        /// Daemon está terminando.
+        DaemonShutdown,
+        /// Heartbeat periódico para detectar desconexión.
+        Heartbeat { timestamp: u64 },
+        /// El cliente se desconectó del daemon.
+        Disconnected { reason: std::string::String },
+    }
 }
 
 #[cfg(feature = "std")]
 pub use ipc::{
-    AgentInfo, IpcCommand, IpcResponse, RuleInfo, SandboxMode, SandboxedAgent, SessionInfo,
-    SnapshotInfo,
+    AgentInfo, IpcCommand, IpcEvent, IpcResponse, ProfileInfo, RuleInfo, SandboxMode,
+    SandboxedAgent, SessionInfo, SnapshotInfo, SuggestionInfo,
 };

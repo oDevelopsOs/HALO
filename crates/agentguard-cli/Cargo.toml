@@ -26,6 +26,12 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 interprocess = { workspace = true }
 dirs = { workspace = true }
+# CA fingerprint formatting in `agentguard ca show`
+sha2 = { workspace = true }
+
+# `geteuid()` for resolving the CA directory based on whether we run as root
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

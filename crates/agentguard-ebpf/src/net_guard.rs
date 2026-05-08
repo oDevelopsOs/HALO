@@ -2,7 +2,10 @@
 #![no_main]
 
 use aya_ebpf::{
-    helpers::{bpf_get_current_comm, bpf_get_current_pid_tgid, bpf_get_current_uid_gid},
+    helpers::{
+        bpf_get_current_comm, bpf_get_current_pid_tgid, bpf_get_current_uid_gid,
+        bpf_probe_read_kernel,
+    },
     macros::{lsm, map},
     maps::{Array, RingBuf},
     programs::LsmContext,
@@ -17,17 +20,6 @@ static NET_RESTRICT_MODE: Array<u8> = Array::with_max_entries(1, 0);
 /// Ring buffer para emitir NetworkEvent al userspace
 #[map]
 static NET_EVENTS: RingBuf = RingBuf::with_byte_size(2 * 1024 * 1024, 0);
-
-/// AF_INET
-const AF_INET: u16 = 2;
-/// AF_INET6
-const AF_INET6: u16 = 10;
-/// 127.0.0.1 in network byte order (0x7F000001 → big-endian u32 = 0x0100007F)
-const LOCALHOST_IPV4_BE: u32 = 0x0100_007F_u32;
-/// ::1 in network byte order (last 4 bytes of IPv6 ::1)
-const LOCALHOST_IPV6_LAST4: u32 = 0x0100_0000_u32;
-/// IPv6 address size in bytes
-const IPV6_ADDR_LEN: usize = 16;
 
 #[lsm(hook = "socket_connect")]
 pub fn socket_connect(ctx: LsmContext) -> i32 {
@@ -46,39 +38,61 @@ pub fn socket_connect(ctx: LsmContext) -> i32 {
         return 0;
     }
 
-    // Read sin_family (first 2 bytes of sockaddr)
-    let family: u16 = unsafe { core::ptr::read_unaligned(addr_ptr as *const u16) };
+    // Use bpf_probe_read_kernel for ALL sockaddr reads —
+    // the verifier rejects direct access beyond struct sockaddr (16 bytes).
+    let family: u16 = match unsafe {
+        bpf_probe_read_kernel::<u16>(addr_ptr as *const u16)
+    } {
+        Ok(f) => f,
+        Err(_) => return 0,
+    };
 
-    if family == AF_INET {
-        // IPv4: read sin_addr at offset 4
-        let addr: u32 = unsafe { core::ptr::read_unaligned(addr_ptr.add(4) as *const u32) };
-        if addr == LOCALHOST_IPV4_BE {
-            return 0;
+    if family == 2 {
+        // AF_INET: read sin_addr at offset 4
+        let addr: u32 = match unsafe {
+            bpf_probe_read_kernel::<u32>(addr_ptr.add(4) as *const u32)
+        } {
+            Ok(a) => a,
+            Err(_) => return 0,
+        };
+        if addr == 0x0100_007F_u32 {
+            return 0; // 127.0.0.1
         }
-        // Block non-localhost IPv4
         emit_net_event(addr, 0);
         return -1;
     }
 
-    if family == AF_INET6 {
-        // IPv6: read sin6_addr at offset 8
-        // Check if last 4 bytes match ::1 pattern (0:0:0:0:0:0:0:1)
-        let last4: u32 = unsafe { core::ptr::read_unaligned(addr_ptr.add(20) as *const u32) };
-        if last4 == LOCALHOST_IPV6_LAST4 {
-            // Also verify first 12 bytes are zero (true ::1)
-            let mut is_localhost = true;
-            for i in 0..3 {
-                let word: u32 = unsafe { core::ptr::read_unaligned(addr_ptr.add(8 + i * 4) as *const u32) };
-                if word != 0 {
-                    is_localhost = false;
-                    break;
-                }
-            }
-            if is_localhost {
-                return 0;
-            }
+    if family == 10 {
+        // AF_INET6: read sin6_addr at offset 8 (16 bytes)
+        // Check ::1 pattern: first 12 bytes = 0, last 4 bytes = 0x0100_0000
+        let word0: u32 = match unsafe {
+            bpf_probe_read_kernel::<u32>(addr_ptr.add(8) as *const u32)
+        } {
+            Ok(w) => w,
+            Err(_) => return 0,
+        };
+        let word1: u32 = match unsafe {
+            bpf_probe_read_kernel::<u32>(addr_ptr.add(12) as *const u32)
+        } {
+            Ok(w) => w,
+            Err(_) => return 0,
+        };
+        let word2: u32 = match unsafe {
+            bpf_probe_read_kernel::<u32>(addr_ptr.add(16) as *const u32)
+        } {
+            Ok(w) => w,
+            Err(_) => return 0,
+        };
+        let last4: u32 = match unsafe {
+            bpf_probe_read_kernel::<u32>(addr_ptr.add(20) as *const u32)
+        } {
+            Ok(w) => w,
+            Err(_) => return 0,
+        };
+
+        if word0 == 0 && word1 == 0 && word2 == 0 && last4 == 0x0100_0000_u32 {
+            return 0; // ::1 localhost IPv6
         }
-        // Block non-localhost IPv6
         emit_net_event(0, last4);
         return -1;
     }
@@ -86,9 +100,6 @@ pub fn socket_connect(ctx: LsmContext) -> i32 {
     // Non-IPv4/IPv6: allow (fail-open for Unix sockets, other families)
     return 0;
 }
-
-/// Emit a network block event to the ring buffer.
-fn emit_net_event(addr_hint: u32, addr_extra: u32) {
 
 /// Emit a network block event to the ring buffer.
 fn emit_net_event(addr_hint: u32, addr_extra: u32) {

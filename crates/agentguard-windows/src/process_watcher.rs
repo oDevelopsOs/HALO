@@ -13,7 +13,7 @@ mod windows_impl {
     #![allow(dead_code)]
     use std::collections::HashSet;
     use std::sync::Arc;
-    use tokio::sync::{mpsc, RwLock};
+    use tokio::sync::{broadcast, RwLock};
     use windows::core::GUID;
     use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, WIN32_ERROR};
     use windows::Win32::System::Diagnostics::Etw::{
@@ -35,11 +35,14 @@ mod windows_impl {
 
     pub struct ProcessWatcher {
         config: Arc<RwLock<Config>>,
-        event_tx: mpsc::Sender<SecurityEvent>,
+        event_tx: broadcast::Sender<SecurityEvent>,
     }
 
     impl ProcessWatcher {
-        pub fn new(config: Arc<RwLock<Config>>, event_tx: mpsc::Sender<SecurityEvent>) -> Self {
+        pub fn new(
+            config: Arc<RwLock<Config>>,
+            event_tx: broadcast::Sender<SecurityEvent>,
+        ) -> Self {
             Self { config, event_tx }
         }
 
@@ -214,7 +217,10 @@ mod windows_impl {
 
     // ── Polling fallback ──────────────────────────────────────────────────
 
-    pub async fn start_polling(config: Arc<RwLock<Config>>, event_tx: mpsc::Sender<SecurityEvent>) {
+    pub async fn start_polling(
+        config: Arc<RwLock<Config>>,
+        event_tx: broadcast::Sender<SecurityEvent>,
+    ) {
         use sysinfo::Pid;
         use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System};
 
@@ -288,7 +294,7 @@ mod windows_impl {
 #[allow(dead_code)]
 mod stub_impl {
     use std::sync::Arc;
-    use tokio::sync::{mpsc, RwLock};
+    use tokio::sync::{broadcast, RwLock};
 
     use agentguard_core::config::Config;
     use agentguard_core::SecurityEvent;
@@ -297,7 +303,10 @@ mod stub_impl {
     pub struct ProcessWatcher;
 
     impl ProcessWatcher {
-        pub fn new(_config: Arc<RwLock<Config>>, _event_tx: mpsc::Sender<SecurityEvent>) -> Self {
+        pub fn new(
+            _config: Arc<RwLock<Config>>,
+            _event_tx: broadcast::Sender<SecurityEvent>,
+        ) -> Self {
             tracing::info!("ProcessWatcher: not available on this platform (Windows only)");
             Self
         }
@@ -308,7 +317,7 @@ mod stub_impl {
 
         pub async fn start_polling(
             _config: Arc<RwLock<Config>>,
-            _event_tx: mpsc::Sender<SecurityEvent>,
+            _event_tx: broadcast::Sender<SecurityEvent>,
         ) {
             tracing::info!("ProcessWatcher polling not available on this platform");
         }

@@ -22,11 +22,12 @@ use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, oneshot};
 use tokio::time::{timeout, Duration};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
-use super::patterns::{first_match, CompiledPattern};
+use super::patterns::{first_match, replace_all, CompiledPattern};
+use super::sanitizer::PromptSanitizer;
 use super::tls::LeafIssuer;
 use crate::config::DlpAction;
 use crate::events::SecurityEvent;
@@ -78,9 +79,10 @@ impl Drop for DlpProxyHandle {
 pub struct DlpProxy {
     patterns: Arc<Vec<CompiledPattern>>,
     action: DlpAction,
-    events: Option<mpsc::Sender<SecurityEvent>>,
+    events: Option<broadcast::Sender<SecurityEvent>>,
     tls_issuer: Option<LeafIssuer>,
     upstream_root_store: Option<Arc<rustls::RootCertStore>>,
+    sanitizer: Option<PromptSanitizer>,
 }
 
 impl DlpProxy {
@@ -91,7 +93,13 @@ impl DlpProxy {
             events: None,
             tls_issuer: None,
             upstream_root_store: None,
+            sanitizer: None,
         }
+    }
+
+    pub fn with_sanitizer(mut self, sanitizer: PromptSanitizer) -> Self {
+        self.sanitizer = Some(sanitizer);
+        self
     }
 
     pub fn with_tls(mut self, issuer: LeafIssuer) -> Self {
@@ -104,7 +112,7 @@ impl DlpProxy {
         self
     }
 
-    pub fn with_events(mut self, tx: mpsc::Sender<SecurityEvent>) -> Self {
+    pub fn with_events(mut self, tx: broadcast::Sender<SecurityEvent>) -> Self {
         self.events = Some(tx);
         self
     }
@@ -124,6 +132,7 @@ impl DlpProxy {
         let events = self.events.clone();
         let tls_issuer = self.tls_issuer;
         let upstream_root_store = self.upstream_root_store;
+        let sanitizer = self.sanitizer.clone();
 
         let client: Client<HttpConnector, Full<Bytes>> =
             Client::builder(hyper_util::rt::TokioExecutor::new()).build_http();
@@ -181,9 +190,10 @@ impl DlpProxy {
                                 let p = patterns.clone();
                                 let e = events.clone();
                                 let u = upstream_root_store.clone();
-                                tokio::spawn(async move {
-                                    direct_connect_mitm(stream, host, port, p, action, e, issuer, u).await;
-                                });
+                                    let s = sanitizer.clone();
+                                    tokio::spawn(async move {
+                                        direct_connect_mitm(stream, host, port, p, action, e, issuer, u, s).await;
+                                    });
                                 continue;
                             }
                         }
@@ -197,6 +207,7 @@ impl DlpProxy {
                         let c = client.clone();
                         let ti = tls_issuer.clone();
                         let us = upstream_root_store.clone();
+                        let s = sanitizer.clone();
                         tokio::spawn(async move {
                             let svc = service_fn(move |req| {
                                 let p = p.clone();
@@ -204,8 +215,9 @@ impl DlpProxy {
                                 let c = c.clone();
                                 let ti = ti.clone();
                                 let us = us.clone();
+                                let s = s.clone();
                                 async move {
-                                    Ok::<_, Infallible>(handle_request(req, p, action, e, c, ti, us).await)
+                                    Ok::<_, Infallible>(handle_request(req, p, action, e, c, ti, us, s).await)
                                 }
                             });
                             if let Err(err) = http1::Builder::new().serve_connection(io, svc).await {
@@ -224,14 +236,16 @@ impl DlpProxy {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_request(
     req: Request<Incoming>,
     patterns: Arc<Vec<CompiledPattern>>,
     action: DlpAction,
-    events: Option<mpsc::Sender<SecurityEvent>>,
+    events: Option<broadcast::Sender<SecurityEvent>>,
     client: Arc<Client<HttpConnector, Full<Bytes>>>,
     _tls_issuer: Option<LeafIssuer>,
     _upstream_root_store: Option<Arc<rustls::RootCertStore>>,
+    sanitizer: Option<PromptSanitizer>,
 ) -> Response<Full<Bytes>> {
     if req.method() == Method::CONNECT {
         return text_response(
@@ -270,15 +284,13 @@ async fn handle_request(
     if let Some(matched) = first_match(&patterns, &haystack) {
         tracing::warn!(pattern = %matched, destination = %uri_for_log, action = ?action, "DLP violation detected");
         if let Some(ref tx) = events {
-            let _ = tx
-                .send(SecurityEvent::DlpViolation {
-                    pattern_name: matched.to_string(),
-                    destination: uri_for_log.clone(),
-                    process: "<proxy-unknown>".into(),
-                    pid: 0,
-                    timestamp: now_ts(),
-                })
-                .await;
+            let _ = tx.send(SecurityEvent::DlpViolation {
+                pattern_name: matched.to_string(),
+                destination: uri_for_log.clone(),
+                process: "<proxy-unknown>".into(),
+                pid: 0,
+                timestamp: now_ts(),
+            });
         }
         match action {
             DlpAction::Block => {
@@ -286,6 +298,23 @@ async fn handle_request(
                     "AgentGuard DLP: request blocked — {} detected. Check your agent's prompt for credential leaks.",
                     matched
                 ));
+            }
+            DlpAction::Sanitize => {
+                if let Some(ref san) = sanitizer {
+                    let host = parts.uri.host().unwrap_or("unknown");
+                    let (sanitized_body, _infos) =
+                        san.process_body(&body_bytes, host, "<proxy>", 0);
+                    if !_infos.is_empty() {
+                        tracing::info!(
+                            pattern = %matched,
+                            destination = %uri_for_log,
+                            redactions = _infos.len(),
+                            "DLP sanitized — secrets redacted from request"
+                        );
+                    }
+                    return forward_request(parts, sanitized_body, client).await;
+                }
+                // Fallthrough: no sanitizer configured, treat as Alert
             }
             DlpAction::Alert | DlpAction::Log => {}
         }
@@ -490,9 +519,10 @@ async fn direct_connect_mitm(
     port: u16,
     patterns: Arc<Vec<CompiledPattern>>,
     action: DlpAction,
-    events: Option<mpsc::Sender<SecurityEvent>>,
+    events: Option<broadcast::Sender<SecurityEvent>>,
     issuer: LeafIssuer,
     upstream_root_store: Option<Arc<rustls::RootCertStore>>,
+    sanitizer: Option<PromptSanitizer>,
 ) {
     let server_config = match issuer.server_config_for(&host) {
         Ok(cfg) => cfg,
@@ -573,26 +603,38 @@ async fn direct_connect_mitm(
     let fwd_action = action;
     let fwd_host = host.clone();
 
+    let fwd_sanitizer = sanitizer.clone();
+    let fwd_is_sanitize = action == DlpAction::Sanitize;
+
     let forward = tokio::spawn(async move {
         let mut buf = vec![0u8; MITM_BUF_SIZE];
+        let mut request_buffer: Vec<u8> = Vec::new();
+        let max_buffer = MAX_BODY_SCAN_BYTES as usize;
         loop {
             match client_r.read(&mut buf).await {
                 Ok(0) => break,
                 Ok(n) => {
                     let data = &buf[..n];
+
+                    if fwd_is_sanitize {
+                        request_buffer.extend_from_slice(data);
+                        if request_buffer.len() >= max_buffer {
+                            break;
+                        }
+                        continue;
+                    }
+
                     let text = String::from_utf8_lossy(data);
                     if let Some(matched) = first_match(&fwd_patterns, &text) {
                         tracing::warn!(pattern = %matched, host = %fwd_host, "DLP violation in HTTPS stream");
                         if let Some(ref tx) = fwd_events {
-                            let _ = tx
-                                .send(SecurityEvent::DlpViolation {
-                                    pattern_name: matched.to_string(),
-                                    destination: format!("https://{}/", fwd_host),
-                                    process: "<mitm>".into(),
-                                    pid: 0,
-                                    timestamp: now_ts(),
-                                })
-                                .await;
+                            let _ = tx.send(SecurityEvent::DlpViolation {
+                                pattern_name: matched.to_string(),
+                                destination: format!("https://{}/", fwd_host),
+                                process: "<mitm>".into(),
+                                pid: 0,
+                                timestamp: now_ts(),
+                            });
                         }
                         if fwd_action == DlpAction::Block {
                             break;
@@ -606,6 +648,30 @@ async fn direct_connect_mitm(
                     tracing::debug!(error = %e, host = %fwd_host, "MITM client read error");
                     break;
                 }
+            }
+        }
+
+        // For sanitize mode: redact the buffered request and forward
+        if fwd_is_sanitize && !request_buffer.is_empty() {
+            let text = String::from_utf8_lossy(&request_buffer);
+            if first_match(&fwd_patterns, &text).is_some() {
+                if let Some(ref san) = fwd_sanitizer {
+                    let (redacted, _infos) =
+                        san.process_chunk(&request_buffer, &fwd_host, "<mitm>", 0);
+                    if !_infos.is_empty() {
+                        tracing::info!(
+                            host = %fwd_host,
+                            redactions = _infos.len(),
+                            "MITM DLP sanitized — secrets redacted from HTTPS stream"
+                        );
+                    }
+                    let _ = upstream_w.write_all(&redacted).await;
+                } else {
+                    let (redacted, _) = replace_all(&fwd_patterns, &text, "visible");
+                    let _ = upstream_w.write_all(redacted.as_bytes()).await;
+                }
+            } else {
+                let _ = upstream_w.write_all(&request_buffer).await;
             }
         }
     });
@@ -909,7 +975,7 @@ mod tests {
         let ca_pem = ca.cert_pem().to_string();
 
         let patterns = compile_defaults().expect("defaults");
-        let (event_tx, mut event_rx) = mpsc::channel::<SecurityEvent>(8);
+        let (event_tx, mut event_rx) = broadcast::channel::<SecurityEvent>(8);
 
         let (handle, server_addr, server_shutdown) = {
             let issuer = LeafIssuer::new(&ca).expect("issuer");
@@ -1033,7 +1099,7 @@ mod tests {
     #[tokio::test]
     async fn alert_action_lets_request_pass_but_still_emits_event() {
         let patterns = compile_defaults().expect("defaults");
-        let (tx, mut rx) = mpsc::channel(8);
+        let (tx, mut rx) = broadcast::channel(8);
         let proxy = DlpProxy::new(patterns, DlpAction::Alert).with_events(tx);
         let handle = proxy
             .start(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))

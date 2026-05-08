@@ -45,7 +45,7 @@ clap = { workspace = true }
 async-trait = "0.1"
 notify = { version = "6", default-features = false }
 libc = "0.2"
-nix = { version = "0.29", features = ["user", "signal"] }
+nix = { version = "0.29", features = ["user", "signal", "fanotify", "fs"] }
 
 # eBPF backend (feature for conditional compilation)
 aya = { version = "0.13", optional = true }
@@ -72,5 +72,5 @@ tempfile = "3"
 tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
 
 [features]
-default = []
+default = ["ebpf"]
 ebpf = ["aya", "aya-log", "agentguard-common/ebpf-aya"]

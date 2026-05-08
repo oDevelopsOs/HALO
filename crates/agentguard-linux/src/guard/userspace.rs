@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 use notify::event::{ModifyKind, RemoveKind};
 use notify::{recommended_watcher, Event, EventKind, RecursiveMode, Watcher};
-use tokio::sync::mpsc;
+use tokio::sync::broadcast;
 
 use agentguard_core::{GuardError, KernelGuard, ProtectionLevel, SecurityEvent, ViolationKind};
 
@@ -62,7 +62,10 @@ impl KernelGuard for UserspaceGuard {
         Ok(())
     }
 
-    async fn run(self: Box<Self>, out_tx: mpsc::Sender<SecurityEvent>) -> Result<(), GuardError> {
+    async fn run(
+        self: Box<Self>,
+        out_tx: broadcast::Sender<SecurityEvent>,
+    ) -> Result<(), GuardError> {
         let (notify_tx, notify_rx) = std::sync::mpsc::channel::<notify::Result<Event>>();
 
         let mut watcher = recommended_watcher(move |res| {
@@ -82,7 +85,7 @@ impl KernelGuard for UserspaceGuard {
                 match res {
                     Ok(event) => {
                         for ev in translate(event) {
-                            if out_tx.blocking_send(ev).is_err() {
+                            if out_tx.send(ev).is_err() {
                                 return;
                             }
                         }
@@ -162,7 +165,7 @@ mod tests {
             ProtectionLevel::UserspaceObservation
         );
 
-        let (tx, mut rx) = mpsc::channel(32);
+        let (tx, mut rx) = broadcast::channel::<SecurityEvent>(32);
         let handle = tokio::spawn(guard.run(tx));
 
         tokio::time::sleep(Duration::from_millis(500)).await;

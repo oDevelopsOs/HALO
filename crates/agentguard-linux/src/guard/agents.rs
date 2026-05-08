@@ -19,7 +19,7 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use tokio::sync::mpsc;
+use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
 use agentguard_core::config::AgentProcess;
@@ -41,24 +41,29 @@ const MAX_ARG_LEN: usize = 1024;
 pub struct AgentScanner {
     patterns: Vec<AgentProcess>,
     tracked: HashSet<u32>,
+    /// Modo de sandbox configurado ("monitor", "sandbox", "hybrid").
+    sandbox_mode: String,
+    /// true = primer escaneo (todos los agentes ya estaban corriendo).
+    first_scan: bool,
 }
 
 impl AgentScanner {
-    pub fn new(patterns: Vec<AgentProcess>) -> Self {
+    pub fn new(patterns: Vec<AgentProcess>, sandbox_mode: &str) -> Self {
         Self {
             patterns,
             tracked: HashSet::new(),
+            sandbox_mode: sandbox_mode.to_string(),
+            first_scan: true,
         }
     }
 
     /// Ejecuta un escaneo completo de `/proc`.
     ///
-    /// Para cada proceso detectado que coincide con los patrones:
-    /// 1. Registra el PID en `tracked`
-    /// 2. Lee `/proc/<pid>/cwd` para verificar si está en un dir protegido
-    /// 3. Si está protegido y el modo es sandbox/hybrid: kill + bwrap
-    /// 4. Emite `AgentDetected` o `AgentSandboxed`
-    pub fn scan(&mut self, tx: &mpsc::Sender<SecurityEvent>) {
+    /// En el primer escaneo, todos los agentes detectados se marcan como
+    /// "monitor" (ya estaban corriendo antes del daemon). En escaneos
+    /// subsecuentes, los nuevos PIDs se reportan con el modo configurado
+    /// (sandbox/hybrid) para que el daemon los sandboxee.
+    pub fn scan(&mut self, tx: &broadcast::Sender<SecurityEvent>) {
         let current_pid = std::process::id();
 
         let entries = match std::fs::read_dir("/proc") {
@@ -94,22 +99,36 @@ impl AgentScanner {
             }
 
             self.tracked.insert(pid);
+            let cwd = read_proc_cwd(pid).unwrap_or_else(|| PathBuf::from("/proc"));
+
+            // Primer escaneo: todo es "monitor" (agentes preexistentes).
+            // Escaneos subsecuentes: agentes nuevos → usar modo configurado.
+            let mode: &str = if self.first_scan {
+                "monitor"
+            } else {
+                &self.sandbox_mode
+            };
+
             info!(
                 pid,
                 comm = %exe_name,
                 argv = %cmdline.as_deref().unwrap_or(""),
+                cwd = %cwd.display(),
+                mode = %mode,
+                first_scan = self.first_scan,
                 "AI agent process detected"
             );
 
-            let _ = tx.blocking_send(SecurityEvent::AgentDetected {
+            let _ = tx.send(SecurityEvent::AgentDetected {
                 pid,
                 agent_name: exe_name.to_string(),
-                cwd: std::path::PathBuf::from("/proc"),
-                mode: "monitor".into(),
+                cwd,
+                mode: mode.to_string(),
                 timestamp: unix_ts(),
             });
         }
 
+        self.first_scan = false;
         self.cleanup();
     }
 
@@ -124,9 +143,14 @@ impl AgentScanner {
 
 /// Escanea procesos en bucle periódico. Diseñado para ejecutarse como
 /// tarea de bloqueo dedicada (spawn_blocking).
-pub fn scan_loop(patterns: Vec<AgentProcess>, tx: mpsc::Sender<SecurityEvent>) {
-    let mut scanner = AgentScanner::new(patterns);
+pub fn scan_loop(
+    patterns: Vec<AgentProcess>,
+    sandbox_mode: String,
+    tx: broadcast::Sender<SecurityEvent>,
+) {
+    let mut scanner = AgentScanner::new(patterns, &sandbox_mode);
     info!(
+        mode = %sandbox_mode,
         "agent process scanner started (/proc scan, {}s interval)",
         SCAN_INTERVAL_MS / 1000
     );
@@ -194,6 +218,12 @@ fn read_cmdline(pid: u32) -> Option<String> {
 #[allow(dead_code)]
 fn read_exe_path(pid: u32) -> Option<PathBuf> {
     let link = format!("/proc/{pid}/exe");
+    std::fs::read_link(&link).ok()
+}
+
+/// Lee `/proc/PID/cwd` — directorio de trabajo actual del proceso.
+fn read_proc_cwd(pid: u32) -> Option<PathBuf> {
+    let link = format!("/proc/{pid}/cwd");
     std::fs::read_link(&link).ok()
 }
 

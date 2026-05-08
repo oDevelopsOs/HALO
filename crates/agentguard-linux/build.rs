@@ -20,19 +20,33 @@ fn embed_ebpf_bytecode() {
     let bytecode_dir = manifest.join("../../target/ebpf");
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
+    let any_missing = ["file_guard", "net_guard", "process_exec"]
+        .iter()
+        .any(|n| !bytecode_dir.join(n).exists());
+
+    if any_missing {
+        println!(
+            "cargo:warning=\n\
+             ═══════════════════════════════════════════════\n\
+             eBPF bytecode not found in {}\n\n\
+             Build it first with: ./scripts/build-ebpf.sh\n\n\
+             Daemon will compile WITHOUT eBPF support.\n\
+             Kernel-level blocking will be unavailable;\n\
+             userspace observation-only fallback will be used.\n\
+             ═══════════════════════════════════════════════",
+            bytecode_dir.display()
+        );
+        // Write an empty placeholder so include_bytes_aligned! doesn't fail.
+        // At runtime, EbpfGuard::try_load will detect and skip gracefully.
+        for name in &["file_guard", "net_guard", "process_exec"] {
+            let dst = out_dir.join(format!("{name}.bpf.o"));
+            let _ = fs::write(&dst, b"\0");
+        }
+        return;
+    }
+
     for name in &["file_guard", "net_guard", "process_exec"] {
         let src = bytecode_dir.join(name);
-        if !src.exists() {
-            panic!(
-                "\n========================================\n\
-                 eBPF bytecode not found: {src:?}\n\n\
-                 Build it first with:\n\
-                 \t./scripts/build-ebpf.sh\n\n\
-                 Or disable the eBPF feature:\n\
-                 \tcargo build --no-default-features\n\
-                 ========================================",
-            );
-        }
         let dst = out_dir.join(format!("{name}.bpf.o"));
         fs::copy(&src, &dst).unwrap_or_else(|e| panic!("copy {src:?} → {dst:?}: {e}"));
     }

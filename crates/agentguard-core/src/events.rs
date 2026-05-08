@@ -36,6 +36,18 @@ pub enum SecurityEvent {
         timestamp: u64,
     },
 
+    /// v2.2: Secreto redactado (sanitizado) por el proxy DLP — el request siguió.
+    DlpRedaction {
+        pattern_name: String,
+        destination: String,
+        process: String,
+        pid: u32,
+        /// Cuántas ocurrencias del secreto se redactaron.
+        redaction_count: u32,
+        #[serde(default = "current_timestamp")]
+        timestamp: u64,
+    },
+
     /// Error interno del daemon (ej: backend kernel caído).
     SystemError {
         message: String,
@@ -80,6 +92,7 @@ impl SecurityEvent {
         match self {
             Self::FileViolation { timestamp, .. }
             | Self::DlpViolation { timestamp, .. }
+            | Self::DlpRedaction { timestamp, .. }
             | Self::SystemError { timestamp, .. }
             | Self::AgentDetected { timestamp, .. }
             | Self::AgentSandboxed { timestamp, .. } => *timestamp,

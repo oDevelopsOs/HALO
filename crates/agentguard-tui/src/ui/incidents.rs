@@ -3,7 +3,7 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, BorderType, Borders, Paragraph},
     Frame,
 };
 
@@ -31,6 +31,7 @@ pub fn render(f: &mut Frame, state: &AppState, area: Rect) {
     let block = Block::default()
         .title(format!(" Incidents — {count} events "))
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(theme::BORDER);
 
     let content = if state.incidents.is_empty()
@@ -80,7 +81,7 @@ fn format_incidents(lines: &[String], filter: &str) -> String {
             // Color by kind
             let (icon, _color) = match kind {
                 "agent_detected" => ("A", Color::Cyan),
-                "file_violation" => ("!", Color::Red),
+                "file_violation" => ("!", theme::ORANGE),
                 "dlp_violation" => ("K", Color::Yellow),
                 "agent_sandboxed" => ("S", Color::Green),
                 _ => ("*", Color::Gray),

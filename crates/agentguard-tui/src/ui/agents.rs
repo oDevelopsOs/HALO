@@ -4,11 +4,12 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, BorderType, Borders, List, ListItem, Paragraph},
     Frame,
 };
 
 use crate::app::AppState;
+use crate::theme;
 
 pub fn render_agents(frame: &mut Frame, area: Rect, state: &AppState) {
     let chunks = Layout::default()
@@ -19,7 +20,12 @@ pub fn render_agents(frame: &mut Frame, area: Rect, state: &AppState) {
     // Summary header
     let header = if state.agents.is_empty() {
         Paragraph::new("No agents tracked yet. Agents appear here when the daemon detects them.")
-            .block(Block::default().borders(Borders::ALL).title("AI Agents"))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .title("AI Agents"),
+            )
             .style(Style::default().fg(Color::Gray))
     } else {
         let total_sessions: i64 = state.agents.iter().map(|a| a.total_sessions).sum();
@@ -31,7 +37,12 @@ pub fn render_agents(frame: &mut Frame, area: Rect, state: &AppState) {
             total_violations
         );
         Paragraph::new(summary)
-            .block(Block::default().borders(Borders::ALL).title("AI Agents"))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .title("AI Agents"),
+            )
             .style(Style::default().fg(Color::Cyan))
     };
     frame.render_widget(header, chunks[0]);
@@ -43,9 +54,9 @@ pub fn render_agents(frame: &mut Frame, area: Rect, state: &AppState) {
             .iter()
             .map(|a| {
                 let status_color = if a.total_violations > 0 {
-                    Color::Red
+                    theme::ORANGE
                 } else {
-                    Color::Green
+                    theme::PURPLE_BRIGHT
                 };
                 let sandbox_time = if a.total_sandbox_seconds > 0 {
                     format!("{}s sandbox", a.total_sandbox_seconds)

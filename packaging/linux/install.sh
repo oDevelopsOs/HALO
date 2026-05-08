@@ -135,7 +135,45 @@ EOF
 
     # 6. Instalar y arrancar systemd service
     info "Instalando systemd service..."
+
+    # Detectar usuario real para AGENTGUARD_USER_HOME
+    REAL_USER="${SUDO_USER:-$USER}"
+    REAL_HOME=""
+    if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ]; then
+        REAL_HOME=$(getent passwd "$REAL_USER" | cut -d: -f6 2>/dev/null || echo "")
+    fi
+    if [ -z "$REAL_HOME" ]; then
+        # Buscar primer usuario humano en /etc/passwd
+        REAL_HOME=$(awk -F: '$3>=1000 && $7!~/nologin|false/ && $7!="" {print $6; exit}' /etc/passwd 2>/dev/null || echo "")
+    fi
+
     sudo cp packaging/linux/agentguard.service /etc/systemd/system/agentguard.service
+
+    # Configurar AGENTGUARD_USER_HOME en el service si tenemos home real
+    if [ -n "$REAL_HOME" ] && [ "$REAL_HOME" != "/root" ]; then
+        sudo mkdir -p /etc/systemd/system/agentguard.service.d
+        cat <<EOF | sudo tee /etc/systemd/system/agentguard.service.d/user-home.conf > /dev/null
+[Service]
+Environment=AGENTGUARD_USER_HOME=$REAL_HOME
+EOF
+        info "Configurado AGENTGUARD_USER_HOME=$REAL_HOME"
+    fi
+
+    # Configurar proxy DLP en /etc/environment
+    if ! grep -q "AgentGuard DLP Proxy" /etc/environment 2>/dev/null; then
+        info "Configurando proxy DLP en /etc/environment..."
+        cat <<'EOF' | sudo tee -a /etc/environment > /dev/null
+
+# AgentGuard DLP Proxy
+HTTP_PROXY=http://127.0.0.1:7771
+HTTPS_PROXY=http://127.0.0.1:7771
+http_proxy=http://127.0.0.1:7771
+https_proxy=http://127.0.0.1:7771
+NO_PROXY=localhost,127.0.0.1,::1
+no_proxy=localhost,127.0.0.1,::1
+EOF
+    fi
+
     sudo systemctl daemon-reload
     sudo systemctl enable --now agentguard
 
@@ -154,6 +192,10 @@ EOF
     echo "    agentguard protect ~/Documents  # proteger carpeta"
     echo "    agentguard snapshot create      # snapshot manual"
     echo "    agentguard incidents            # últimos incidentes"
+    echo "    agentguard ca install           # instalar CA en trust store"
+    echo "  Proxy DLP:"
+    echo "    HTTP_PROXY=http://127.0.0.1:7771 (configurado en /etc/environment)"
+    echo "    Reinicia tu sesión o ejecuta: source /etc/environment"
     echo "  Logs:"
     echo "    journalctl -u agentguard -f     # seguir logs"
     echo "    cat /var/log/agentguard/incidents.jsonl"

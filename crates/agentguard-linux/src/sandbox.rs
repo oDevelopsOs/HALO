@@ -41,16 +41,23 @@ impl SandboxLauncher {
         with_network_isolation: bool,
     ) -> Result<u32, anyhow::Error> {
         // Verificar que bwrap está instalado
-        // TOCTOU note: which::which resolves at check time; binary could be
-        // replaced between resolution and spawn(). Mitigation: canonicalize paths
-        // and the race window is microseconds with attacker needing write access.
         let bwrap_path = which::which("bwrap").map_err(|_| {
             anyhow::anyhow!("bwrap not found — install with: sudo apt install bubblewrap")
         })?;
 
-        // Resolver la ruta real del agente
-        let agent_path = which::which(agent_exe)
-            .map_err(|_| anyhow::anyhow!("executable '{}' not found in PATH", agent_exe))?;
+        // Resolver la ruta real del agente.
+        // Si es una ruta absoluta (contiene '/'), verificamos que exista y sea ejecutable.
+        // Si no, usamos which::which para buscar en PATH.
+        let agent_path = if agent_exe.contains('/') {
+            let p = Path::new(agent_exe);
+            if !p.is_file() {
+                anyhow::bail!("executable '{}' not found (absolute path)", agent_exe);
+            }
+            p.to_path_buf()
+        } else {
+            which::which(agent_exe)
+                .map_err(|_| anyhow::anyhow!("executable '{}' not found in PATH", agent_exe))?
+        };
 
         let mut cmd = Command::new(&bwrap_path);
 
@@ -231,6 +238,148 @@ impl SandboxLauncher {
         Ok(pid)
     }
 
+    /// Sandbox transparente — el agente corre normalmente pero con:
+    /// - Directorios protegidos en solo lectura
+    /// - Red restringida (solo localhost)
+    /// - Mismo PID namespace, mismo usuario, misma terminal, mismas sesiones
+    /// - El usuario NO nota diferencia
+    ///
+    /// A diferencia de `launch()`, NO aísla /home, NO cambia de PID namespace,
+    /// NO cambia de usuario. Solo restringe filesystem + red.
+    pub async fn launch_transparent(
+        &self,
+        agent_exe: &str,
+        agent_args: &[String],
+        project_dir: &Path,
+        protected_dirs: &[PathBuf],
+    ) -> Result<u32, anyhow::Error> {
+        let bwrap_path = which::which("bwrap").map_err(|_| {
+            anyhow::anyhow!("bwrap not found — install with: sudo apt install bubblewrap")
+        })?;
+
+        let agent_path = if agent_exe.contains('/') {
+            let p = Path::new(agent_exe);
+            if !p.is_file() {
+                anyhow::bail!("executable '{}' not found", agent_exe);
+            }
+            p.to_path_buf()
+        } else {
+            which::which(agent_exe)
+                .map_err(|_| anyhow::anyhow!("executable '{}' not found", agent_exe))?
+        };
+
+        let mut cmd = Command::new(&bwrap_path);
+
+        // ── Sistema base (readonly) ──────────────────────────────────────────
+        for dir in &["/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc"] {
+            let p = PathBuf::from(dir);
+            if p.exists() {
+                cmd.args(["--ro-bind", dir, dir]);
+            }
+        }
+
+        // ── /home COMPARTIDO (no tmpfs!) ─────────────────────────────────────
+        // El agente necesita sus tokens, config, historial.
+        // Como el daemon corre como root, dirs::home_dir() retorna /root.
+        // Montamos /home entero para que el home del usuario sea accesible.
+        if Path::new("/home").exists() {
+            cmd.args(["--bind", "/home", "/home"]);
+        } else {
+            let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
+            if let Some(home_str) = home.to_str() {
+                cmd.args(["--bind", home_str, home_str]);
+            }
+        }
+
+        // ── Directorios protegidos → READ-ONLY ───────────────────────────────
+        for d in protected_dirs {
+            if let Some(s) = d.to_str() {
+                if d.exists() {
+                    cmd.args(["--ro-bind", s, s]);
+                }
+            }
+        }
+
+        // ── Directorios temporales ────────────────────────────────────────────
+        cmd.args(["--bind", "/tmp", "/tmp"]);
+        cmd.args(["--bind", "/var/tmp", "/var/tmp"]);
+
+        // ── /dev COMPARTIDO (terminal funciona) ───────────────────────────────
+        cmd.args(["--dev-bind", "/dev", "/dev"]);
+
+        // ── /proc ─────────────────────────────────────────────────────────────
+        cmd.args(["--proc", "/proc"]);
+
+        // ── Binario del agente ────────────────────────────────────────────────
+        let agent_str = agent_path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("invalid agent path"))?;
+        cmd.args(["--ro-bind", agent_str, agent_str]);
+
+        // ── Red compartida (DLP proxy la inspecciona) ─────────────────────────
+        // NO --unshare-net: el agente necesita conexión externa.
+        // El DLP proxy en 127.0.0.1:7771 intercepta HTTP/HTTPS para detectar leaks.
+
+        // ── SIN aislamiento agresivo ──────────────────────────────────────────
+        // NO --unshare-pid   → misma terminal
+        // NO --unshare-user  → mismo usuario, mismos permisos
+        // NO --unshare-ipc   → mismo IPC (señales, shm)
+        // NO --new-session   → misma sesión
+        cmd.arg("--die-with-parent");
+
+        // ── Directorio de trabajo ─────────────────────────────────────────────
+        let cwd_str = project_dir
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("invalid project path"))?;
+        cmd.args(["--chdir", cwd_str]);
+
+        // ── Pasar variables de entorno ────────────────────────────────────────
+        // Reenviar HOME, USER, PATH, etc. para que el agente tenga todo
+        for (k, v) in std::env::vars() {
+            // Reenviar todas excepto las que bwrap gestiona
+            if !k.starts_with("BWRAP_") && !k.starts_with("AGENTGUARD_") {
+                cmd.env(k, v);
+            }
+        }
+        cmd.env("AGENTGUARD_SANDBOXED", "1");
+        cmd.env("AGENTGUARD_TRANSPARENT", "1");
+
+        // ── El ejecutable + argumentos originales ─────────────────────────────
+        cmd.arg("--");
+        cmd.arg(agent_str);
+        for arg in agent_args {
+            cmd.arg(arg);
+        }
+
+        cmd.stdout(Stdio::inherit());
+        cmd.stderr(Stdio::inherit());
+        cmd.stdin(Stdio::inherit());
+        cmd.current_dir(project_dir);
+
+        tracing::info!(
+            agent = %agent_exe,
+            args = ?agent_args,
+            cwd = %project_dir.display(),
+            protected = protected_dirs.len(),
+            "launching agent in TRANSPARENT sandbox"
+        );
+
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("failed to spawn transparent bwrap: {}", e))?;
+
+        let pid = child
+            .id()
+            .ok_or_else(|| anyhow::anyhow!("failed to get sandbox PID"))?;
+
+        tokio::spawn(async move {
+            let status = child.wait().await;
+            tracing::info!(pid, ?status, "transparent sandbox exited");
+        });
+
+        Ok(pid)
+    }
+
     /// Verifica si el sistema soporta bwrap, Landlock y eBPF LSM.
     /// Llamado en el arranque del daemon.
     pub fn check_capabilities() -> SandboxCapabilities {
@@ -257,6 +406,8 @@ impl SandboxCapabilities {
         match requested {
             "hybrid" if self.bwrap_available && self.landlock_available => "hybrid",
             "hybrid" | "sandbox" if self.bwrap_available => "sandbox",
+            "transparent" if self.bwrap_available => "transparent",
+            "transparent" | "ebpf" => "ebpf",
             _ => "monitor",
         }
     }

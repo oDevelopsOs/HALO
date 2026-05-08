@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use thiserror::Error;
-use tokio::sync::mpsc;
+use tokio::sync::broadcast;
 
 use crate::events::SecurityEvent;
 
@@ -38,8 +38,14 @@ pub enum GuardError {
 /// Niveles de confianza de la protección ofrecida por un guard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProtectionLevel {
-    /// Kernel-level: el backend DENIEGA la operación antes de que ocurra.
+    /// Kernel-level: el backend DENIEGA la operación antes de que ocurra
+    /// (eBPF LSM hooks).
     KernelDenial,
+    /// Userspace con bloqueo síncrono (p.ej. fanotify `FAN_DENY`): el kernel
+    /// entrega el evento al daemon antes de completar la syscall y espera el
+    /// veredicto. Bloquea write-opens / exec, pero no `unlink` / `rename`
+    /// (que no exponen permission events).
+    UserspaceBlocking,
     /// Userspace watch: el backend solo OBSERVA. Detecta post-hoc.
     UserspaceObservation,
 }
@@ -60,5 +66,5 @@ pub trait KernelGuard: Send + Sync {
     async fn remove_protected_path(&mut self, path: &Path) -> Result<(), GuardError>;
 
     /// Arranca el loop de escucha de eventos.
-    async fn run(self: Box<Self>, tx: mpsc::Sender<SecurityEvent>) -> Result<(), GuardError>;
+    async fn run(self: Box<Self>, tx: broadcast::Sender<SecurityEvent>) -> Result<(), GuardError>;
 }

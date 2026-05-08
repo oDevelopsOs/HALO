@@ -40,6 +40,7 @@ use std::sync::Arc;
 
 use agentguard_core::ca::LocalCa;
 use agentguard_core::config::Config;
+use agentguard_core::db::Database;
 use agentguard_core::dlp::patterns::compile_all;
 use agentguard_core::dlp::tls::LeafIssuer;
 use agentguard_core::dlp::DlpProxy;
@@ -50,7 +51,7 @@ use agentguard_core::KernelGuard;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use tokio::sync::mpsc;
+use tokio::sync::broadcast;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -575,6 +576,18 @@ async fn run_daemon(args: Args, shutdown: Arc<AtomicBool>) -> Result<()> {
         }
     }
 
+    // ── Database (Fase 6: siempre activa) ────────────────────
+    let db = match Database::open_default() {
+        Ok(d) => {
+            info!(path = %d.path().display(), "SQLite database opened");
+            Some(Arc::new(d))
+        }
+        Err(e) => {
+            warn!(error = %e, "failed to open SQLite database — agents/stats/rules unavailable");
+            None
+        }
+    };
+
     // ── CA (HTTPS MITM) ─────────────────────────────────────
     let ca_dir = default_ca_dir();
     let ca = LocalCa::load_or_generate(&ca_dir).with_context(|| format!("CA at {ca_dir:?}"))?;
@@ -597,7 +610,8 @@ async fn run_daemon(args: Args, shutdown: Arc<AtomicBool>) -> Result<()> {
     );
 
     // ── Canal de eventos ────────────────────────────────────
-    let (event_tx, mut event_rx) = mpsc::channel::<SecurityEvent>(256);
+    let (event_tx, _) = broadcast::channel::<SecurityEvent>(256);
+    let mut event_rx = event_tx.subscribe();
 
     let guard_event_tx = event_tx.clone();
     let guard_task = tokio::spawn(async move {
@@ -660,7 +674,7 @@ async fn run_daemon(args: Args, shutdown: Arc<AtomicBool>) -> Result<()> {
     // ── IPC server ──────────────────────────────────────────
     let log_path = incidents_log_path();
     let paused = Arc::new(AtomicBool::new(false));
-    let ipc_server = IpcServer::builder(
+    let mut ipc_builder = IpcServer::builder(
         vault.clone(),
         config.clone(),
         &guard_backend_name,
@@ -670,8 +684,15 @@ async fn run_daemon(args: Args, shutdown: Arc<AtomicBool>) -> Result<()> {
     .paused(paused.clone())
     .sandbox_mode("sandbox".to_string())
     .capabilities("AppContainer=yes ETW=yes".to_string())
-    .build()
-    .with_context(|| "failed to create IPC server")?;
+    .event_bus(event_tx.clone());
+
+    if let Some(ref db) = db {
+        ipc_builder = ipc_builder.database(db.clone());
+    }
+
+    let ipc_server = ipc_builder
+        .build()
+        .with_context(|| "failed to create IPC server")?;
     let ipc_pipe_name = default_ipc_pipe_name();
     let ipc_socket_path = std::path::PathBuf::from(&ipc_pipe_name);
     let ipc_handle = match ipc_server.start(ipc_socket_path.clone()) {
@@ -693,6 +714,7 @@ async fn run_daemon(args: Args, shutdown: Arc<AtomicBool>) -> Result<()> {
     let vault_for_events = vault.clone();
     let snapshot_on_violation = config.on_violation.snapshot_on_violation;
     let violation_paths = config.protected_dirs.clone();
+    let db_for_events = db.clone();
 
     info!("entering main loop");
 
@@ -703,18 +725,30 @@ async fn run_daemon(args: Args, shutdown: Arc<AtomicBool>) -> Result<()> {
         }
 
         tokio::select! {
-            Some(event) = event_rx.recv() => {
-                if paused.load(Ordering::SeqCst) {
-                    tracing::debug!(kind = ?event, "event received while paused");
-                    persist_incident(&log_path, &event).await;
-                } else {
-                    persist_incident(&log_path, &event).await;
-                    handle_event(
-                        &vault_for_events,
-                        snapshot_on_violation,
-                        &violation_paths,
-                        event,
-                    ).await;
+            result = event_rx.recv() => {
+                match result {
+                    Ok(event) => {
+                        if paused.load(Ordering::SeqCst) {
+                            tracing::debug!(kind = ?event, "event received while paused");
+                            persist_incident(&log_path, &event, db_for_events.as_deref()).await;
+                        } else {
+                            persist_incident(&log_path, &event, db_for_events.as_deref()).await;
+                            handle_event(
+                                &vault_for_events,
+                                snapshot_on_violation,
+                                &violation_paths,
+                                event,
+                                db_for_events.as_deref(),
+                            ).await;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        info!("event bus closed — shutting down");
+                        break;
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(skipped = n, "event bus overflow");
+                    }
                 }
             }
             _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {
@@ -737,7 +771,11 @@ async fn run_daemon(args: Args, shutdown: Arc<AtomicBool>) -> Result<()> {
     Ok(())
 }
 
-async fn persist_incident(log_path: &std::path::Path, event: &SecurityEvent) {
+async fn persist_incident(
+    log_path: &std::path::Path,
+    event: &SecurityEvent,
+    db: Option<&agentguard_core::db::Database>,
+) {
     let entry = match serde_json::to_string(event) {
         Ok(json) => format!("{json}\n"),
         Err(e) => {
@@ -758,6 +796,65 @@ async fn persist_incident(log_path: &std::path::Path, event: &SecurityEvent) {
         }
         Err(e) => error!(error = %e, "failed to open incidents log for append"),
     }
+
+    if let Some(db) = db {
+        let record = agentguard_core::db::IncidentRecord {
+            id: None,
+            timestamp: event.timestamp() as i64,
+            kind: match event {
+                SecurityEvent::FileViolation { .. } => "file_violation",
+                SecurityEvent::DlpViolation { .. } => "dlp_violation",
+                SecurityEvent::DlpRedaction { .. } => "dlp_redaction",
+                SecurityEvent::SystemError { .. } => "system_error",
+                SecurityEvent::AgentDetected { .. } => "agent_detected",
+                SecurityEvent::AgentSandboxed { .. } => "agent_sandboxed",
+            }
+            .into(),
+            agent_name: match event {
+                SecurityEvent::FileViolation { process, .. } => Some(process.clone()),
+                SecurityEvent::DlpViolation { process, .. } => Some(process.clone()),
+                SecurityEvent::DlpRedaction { process, .. } => Some(process.clone()),
+                SecurityEvent::AgentDetected { agent_name, .. } => Some(agent_name.clone()),
+                SecurityEvent::AgentSandboxed { agent_name, .. } => Some(agent_name.clone()),
+                SecurityEvent::SystemError { .. } => None,
+            },
+            agent_pid: match event {
+                SecurityEvent::FileViolation { pid, .. }
+                | SecurityEvent::DlpViolation { pid, .. }
+                | SecurityEvent::DlpRedaction { pid, .. } => Some(*pid as i64),
+                SecurityEvent::AgentDetected { pid, .. } => Some(*pid as i64),
+                SecurityEvent::AgentSandboxed { original_pid, .. } => Some(*original_pid as i64),
+                SecurityEvent::SystemError { .. } => None,
+            },
+            path: match event {
+                SecurityEvent::FileViolation { path, .. } => Some(path.display().to_string()),
+                SecurityEvent::DlpViolation { destination, .. }
+                | SecurityEvent::DlpRedaction { destination, .. } => Some(destination.clone()),
+                SecurityEvent::AgentDetected { cwd, .. }
+                | SecurityEvent::AgentSandboxed { cwd, .. } => Some(cwd.display().to_string()),
+                SecurityEvent::SystemError { .. } => None,
+            },
+            violation: match event {
+                SecurityEvent::FileViolation { violation, .. } => Some(format!("{violation:?}")),
+                SecurityEvent::DlpViolation { pattern_name, .. }
+                | SecurityEvent::DlpRedaction { pattern_name, .. } => Some(pattern_name.clone()),
+                _ => None,
+            },
+            process: match event {
+                SecurityEvent::FileViolation { process, .. } => Some(process.clone()),
+                SecurityEvent::DlpViolation { process, .. } => Some(process.clone()),
+                SecurityEvent::DlpRedaction { process, .. } => Some(process.clone()),
+                SecurityEvent::AgentDetected { agent_name, .. } => Some(agent_name.clone()),
+                SecurityEvent::AgentSandboxed { agent_name, .. } => Some(agent_name.clone()),
+                SecurityEvent::SystemError { .. } => None,
+            },
+            details: None,
+            session_id: None,
+        };
+        if let Err(e) = db.insert_incident(&record) {
+            warn!(error = %e, "failed to insert incident into database");
+        }
+    }
 }
 
 async fn handle_event(
@@ -765,7 +862,53 @@ async fn handle_event(
     snapshot_on_violation: bool,
     protected_paths: &[PathBuf],
     event: SecurityEvent,
+    db: Option<&agentguard_core::db::Database>,
 ) {
+    // Update agent stats in database for agent-related events
+    if let Some(db) = db {
+        match &event {
+            SecurityEvent::AgentDetected { agent_name, .. }
+            | SecurityEvent::AgentSandboxed { agent_name, .. } => {
+                use agentguard_core::db::AgentSession;
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+                let session_id = format!("{agent_name}-{now}");
+                let session = AgentSession {
+                    id: session_id,
+                    agent_name: agent_name.clone(),
+                    pid: match &event {
+                        SecurityEvent::AgentDetected { pid, .. } => Some(*pid as i64),
+                        SecurityEvent::AgentSandboxed { original_pid, .. } => {
+                            Some(*original_pid as i64)
+                        }
+                        _ => None,
+                    },
+                    cwd: match &event {
+                        SecurityEvent::AgentDetected { cwd, .. }
+                        | SecurityEvent::AgentSandboxed { cwd, .. } => {
+                            Some(cwd.display().to_string())
+                        }
+                        _ => None,
+                    },
+                    sandbox_mode: match &event {
+                        SecurityEvent::AgentDetected { mode, .. } => Some(mode.clone()),
+                        SecurityEvent::AgentSandboxed { .. } => Some("sandbox".into()),
+                        _ => None,
+                    },
+                    started_at: now,
+                    ended_at: None,
+                    total_seconds: None,
+                    violation_count: Some(0),
+                };
+                if let Err(e) = db.start_agent_session(&session) {
+                    warn!(error = %e, "failed to record agent session in database");
+                }
+            }
+            _ => {}
+        }
+    }
     match &event {
         SecurityEvent::FileViolation {
             path,
@@ -806,6 +949,19 @@ async fn handle_event(
                 destination = %destination,
                 process = %process,
                 "DLP violation detected"
+            );
+        }
+        SecurityEvent::DlpRedaction {
+            pattern_name,
+            destination,
+            process,
+            ..
+        } => {
+            info!(
+                pattern = %pattern_name,
+                destination = %destination,
+                process = %process,
+                "DLP secret redacted"
             );
         }
         SecurityEvent::SystemError { message, .. } => {
